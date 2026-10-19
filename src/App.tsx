@@ -3,17 +3,21 @@ import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate }
 import { ArrowRight, BookOpen, Command, Compass, FlaskConical, GraduationCap, Layers3, Menu, Moon, Search, Sun, X, Code2, Sparkles } from 'lucide-react'
 import { lessons, lessonSearchText } from './content/lessons'
 import { LearningProvider } from './state'
+import { AuthProvider } from './AuthProvider'
 import { Dashboard, Curriculum, LessonPage, SearchPage, ProjectsPage, InterviewPage, RevisionPage, NotFoundPage } from './pages'
 import { PlaygroundLab } from './PlaygroundLab'
+import { ForgotPasswordPage, LoginPage, ProfilePage, ProtectedRoute, ResetPasswordPage, SignupPage, VerifyEmailPage } from './AuthPages'
+import { useAuth } from './AuthProvider'
 
 function App() {
-  return <LearningProvider><BrowserRouter><AppFrame /></BrowserRouter></LearningProvider>
+  return <AuthProvider><LearningProvider><BrowserRouter><AppFrame /></BrowserRouter></LearningProvider></AuthProvider>
 }
 
 function AppFrame() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('mlverse-theme') === 'dark' ? 'dark' : 'light')
   const [menuOpen, setMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const auth = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   useEffect(() => {
@@ -47,12 +51,12 @@ function AppFrame() {
       <div className="course-links">{lessons.slice(0, 4).map((lesson, index) => <Link to={`/lesson/${lesson.slug}`} className="course-link" key={lesson.slug}><span className={`course-dot dot-${index + 1}`} />{lesson.title}<span className="course-count">{lesson.number}</span></Link>)}</div>
       <div className="sidebar-spacer" />
       <div className="sidebar-footnote"><span>✳</span> Built for curious minds.</div>
-      <div className="sidebar-profile"><span className="profile-avatar">L</span><span><b>Learner</b><small>Local progress</small></span><button aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button></div>
+      <div className="sidebar-profile"><Link to={auth.user ? '/profile' : '/login'} className="sidebar-profile-link"><span className="profile-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span><span><b>{auth.user?.name ?? 'Guest learner'}</b><small>{auth.status === 'loading' ? 'Restoring session…' : auth.user ? 'Synced account' : 'Local progress'}</small></span></Link><button aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button></div>
     </aside>
     {menuOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <main className="main-shell">
-      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>MLVERSE</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button><span className="top-avatar">L</span></header>
-      <Routes><Route path="/" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="*" element={<NotFoundPage />} /></Routes>
+      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>MLVERSE</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>{auth.status === 'authenticated' ? <Link to="/profile" className="auth-nav-link">{auth.user?.name.split(' ')[0]}</Link> : auth.status === 'guest' ? <Link to="/login" className="auth-nav-link">Sign in</Link> : <span className="auth-status" role="status">Checking session</span>}<span className="top-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span></header>
+      <Routes><Route path="/" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="/login" element={<LoginPage />} /><Route path="/signup" element={<SignupPage />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="/verify-email" element={<VerifyEmailPage />} /><Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} /><Route path="*" element={<NotFoundPage />} /></Routes>
       <footer className="app-footer"><span>MLVERSE <i>·</i> Learn by understanding</span><span>Made for the long way in.</span></footer>
     </main>
     {searchOpen && <CommandSearch close={() => setSearchOpen(false)} openLesson={openLesson} />}
