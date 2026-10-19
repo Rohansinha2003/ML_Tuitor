@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, BookOpen, Command, Compass, FlaskConical, GraduationCap, Layers3, Menu, Moon, Search, Sun, X, Code2, Sparkles } from 'lucide-react'
-import { lessons } from './content/lessons'
+import { lessons, lessonSearchText } from './content/lessons'
 import { LearningProvider } from './state'
-import { Dashboard, Curriculum, LessonPage, Playground, SearchPage, ProjectsPage, InterviewPage, RevisionPage } from './pages'
+import { Dashboard, Curriculum, LessonPage, SearchPage, ProjectsPage, InterviewPage, RevisionPage, NotFoundPage } from './pages'
+import { PlaygroundLab } from './PlaygroundLab'
 
 function App() {
   return <LearningProvider><BrowserRouter><AppFrame /></BrowserRouter></LearningProvider>
@@ -42,7 +43,7 @@ function AppFrame() {
         <SidebarLink to="/interviews" icon={<GraduationCap size={17} />} label="Interview prep" />
         <SidebarLink to="/revision" icon={<Sparkles size={17} />} label="Revision" />
       </nav>
-      <div className="nav-label course-label">YOUR COURSE <span>+</span></div>
+      <div className="nav-label course-label">YOUR COURSE <Link to="/curriculum" aria-label="Browse all courses"><ArrowRight size={13} /></Link></div>
       <div className="course-links">{lessons.slice(0, 4).map((lesson, index) => <Link to={`/lesson/${lesson.slug}`} className="course-link" key={lesson.slug}><span className={`course-dot dot-${index + 1}`} />{lesson.title}<span className="course-count">{lesson.number}</span></Link>)}</div>
       <div className="sidebar-spacer" />
       <div className="sidebar-footnote"><span>✳</span> Built for curious minds.</div>
@@ -51,7 +52,7 @@ function AppFrame() {
     {menuOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <main className="main-shell">
       <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>MLVERSE</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button><span className="top-avatar">L</span></header>
-      <Routes><Route path="/" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<Playground />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="*" element={<Dashboard />} /></Routes>
+      <Routes><Route path="/" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="*" element={<NotFoundPage />} /></Routes>
       <footer className="app-footer"><span>MLVERSE <i>·</i> Learn by understanding</span><span>Made for the long way in.</span></footer>
     </main>
     {searchOpen && <CommandSearch close={() => setSearchOpen(false)} openLesson={openLesson} />}
@@ -64,9 +65,24 @@ function SidebarLink({ to, icon, label }: { to: string; icon: React.ReactNode; l
 
 function CommandSearch({ close, openLesson }: { close: () => void; openLesson: (slug: string) => void }) {
   const [query, setQuery] = useState('')
+  const dialogRef = useRef<HTMLElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    inputRef.current?.focus()
+    return () => returnFocus?.focus()
+  }, [])
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean)
-  const results = lessons.filter((lesson) => terms.every((term) => `${lesson.title} ${lesson.description} ${lesson.module} ${lesson.intro}`.toLowerCase().includes(term))).slice(0, 6)
-  return <div className="command-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}><section className="command-dialog" role="dialog" aria-modal="true" aria-label="Search lessons"><div className="command-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search lessons and concepts..." /><button onClick={close} aria-label="Close search"><X size={15} /></button></div><div className="command-results"><span className="command-section-label">{query ? 'MATCHING LESSONS' : 'START EXPLORING'}</span>{results.map((lesson) => <button key={lesson.slug} onClick={() => openLesson(lesson.slug)}><span className="command-result-icon"><BookOpen size={15} /></span><span><b>{lesson.title}</b><small>{lesson.module} · {lesson.estimatedMinutes} min</small></span><ArrowRight size={15} /></button>)}{!results.length && <p className="command-empty">No matches yet. Try a different phrase.</p>}</div><div className="command-footer"><span><kbd>ESC</kbd> to close</span><Link to="/search" onClick={close}>Advanced search <ArrowRight size={13} /></Link></div></section></div>
+  const results = lessons.filter((lesson) => terms.every((term) => lessonSearchText(lesson).includes(term))).slice(0, 6)
+  return <div className="command-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) close() }}><section ref={dialogRef} className="command-dialog" role="dialog" aria-modal="true" aria-label="Search lessons" onKeyDown={(event) => {
+    if (event.key !== 'Tab') return
+    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>('input:not([disabled]), button:not([disabled]), a[href]')
+    if (!focusable?.length) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  }}><div className="command-input"><Search size={18} /><input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search lessons and concepts..." /><button onClick={close} aria-label="Close search"><X size={15} /></button></div><div className="command-results"><span className="command-section-label">{query ? 'MATCHING LESSONS' : 'START EXPLORING'}</span>{results.map((lesson) => <button key={lesson.slug} onClick={() => openLesson(lesson.slug)}><span className="command-result-icon"><BookOpen size={15} /></span><span><b>{lesson.title}</b><small>{lesson.module} · {lesson.estimatedMinutes} min</small></span><ArrowRight size={15} /></button>)}{!results.length && <p className="command-empty">No matches yet. Try a different phrase.</p>}</div><div className="command-footer"><span><kbd>ESC</kbd> to close</span><Link to="/search" onClick={close}>Advanced search <ArrowRight size={13} /></Link></div></section></div>
 }
 
 export default App

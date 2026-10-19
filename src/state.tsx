@@ -10,6 +10,7 @@ export type LearningState = {
 
 const key = 'mlverse-learning-v1'
 const initial: LearningState = { completed: [], bookmarks: [], lastLesson: 'what-is-machine-learning', activity: [], notes: {} }
+const dateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
 type LearningContextValue = {
   state: LearningState
@@ -21,7 +22,7 @@ type LearningContextValue = {
 }
 
 const LearningContext = createContext<LearningContextValue | null>(null)
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => dateKey(new Date())
 
 function readState(): LearningState {
   try {
@@ -57,7 +58,7 @@ export function getStreak(activity: string[]) {
   const date = new Date()
   if (!days.has(today())) date.setDate(date.getDate() - 1)
   let count = 0
-  while (days.has(date.toISOString().slice(0, 10))) {
+  while (days.has(dateKey(date))) {
     count += 1
     date.setDate(date.getDate() - 1)
   }
