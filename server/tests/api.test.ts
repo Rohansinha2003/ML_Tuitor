@@ -8,7 +8,7 @@ import { User } from '../src/models/User.js'
 
 process.env.PORT = '5000'
 process.env.NODE_ENV = 'test'
-process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/mlverse-test'
+process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/deepnova-test'
 process.env.CLIENT_ORIGIN = 'http://localhost:5173'
 process.env.JWT_ACCESS_SECRET = 'test-access-secret-that-is-more-than-thirty-two-bytes'
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-that-is-more-than-thirty-two-bytes'

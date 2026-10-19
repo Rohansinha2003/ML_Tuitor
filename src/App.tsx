@@ -14,7 +14,7 @@ function App() {
 }
 
 function AppFrame() {
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('mlverse-theme') === 'dark' ? 'dark' : 'light')
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('deepnova-theme') ?? localStorage.getItem('mlverse-theme')) === 'dark' ? 'dark' : 'light')
   const [menuOpen, setMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const auth = useAuth()
@@ -22,7 +22,7 @@ function AppFrame() {
   const navigate = useNavigate()
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    localStorage.setItem('mlverse-theme', theme)
+    localStorage.setItem('deepnova-theme', theme)
   }, [theme])
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -36,8 +36,8 @@ function AppFrame() {
   const openLesson = (slug: string) => { navigate(`/lesson/${slug}`); setSearchOpen(false) }
   return <div className="app-frame">
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
-      <Link to="/" className="brand"><span className="brand-mark"><Layers3 size={18} /></span><span className="brand-name">ml<span>verse</span></span><span className="brand-edition">FIELD NOTES 01</span></Link>
-      <button className="workspace-switch" onClick={() => setSearchOpen(true)}><span className="workspace-avatar">M</span><span><b>My learning</b><small>Personal workspace</small></span><span className="workspace-caret">⌄</span></button>
+      <Link to="/" className="brand"><span className="brand-mark"><Layers3 size={18} /></span><span className="brand-name">deep<span>nova</span></span><span className="brand-edition">FIELD NOTES 01</span></Link>
+      <button className="workspace-switch" onClick={() => setSearchOpen(true)}><span className="workspace-avatar">D</span><span><b>My learning</b><small>Personal workspace</small></span><span className="workspace-caret">⌄</span></button>
       <div className="nav-label">LEARN</div>
       <nav className="primary-nav" aria-label="Main navigation">
         <SidebarLink to="/" icon={<Compass size={17} />} label="Overview" />
@@ -55,9 +55,9 @@ function AppFrame() {
     </aside>
     {menuOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <main className="main-shell">
-      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>MLVERSE</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>{auth.status === 'authenticated' ? <Link to="/profile" className="auth-nav-link">{auth.user?.name.split(' ')[0]}</Link> : auth.status === 'guest' ? <Link to="/login" className="auth-nav-link">Sign in</Link> : <span className="auth-status" role="status">Checking session</span>}<span className="top-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span></header>
+      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>DEEPNOVA</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>{auth.status === 'authenticated' ? <Link to="/profile" className="auth-nav-link">{auth.user?.name.split(' ')[0]}</Link> : auth.status === 'guest' ? <Link to="/login" className="auth-nav-link">Sign in</Link> : <span className="auth-status" role="status">Checking session</span>}<span className="top-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span></header>
       <Routes><Route path="/" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="/login" element={<LoginPage />} /><Route path="/signup" element={<SignupPage />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="/verify-email" element={<VerifyEmailPage />} /><Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} /><Route path="*" element={<NotFoundPage />} /></Routes>
-      <footer className="app-footer"><span>MLVERSE <i>·</i> Learn by understanding</span><span>Made for the long way in.</span></footer>
+      <footer className="app-footer"><span>DEEPNOVA <i>·</i> Learn by understanding</span><span>Made for the long way in.</span></footer>
     </main>
     {searchOpen && <CommandSearch close={() => setSearchOpen(false)} openLesson={openLesson} />}
   </div>

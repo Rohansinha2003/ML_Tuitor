@@ -1,6 +1,6 @@
-# MLVerse
+# DeepNova
 
-A local-first learning studio for machine learning and AI. The first release focuses on a working lesson reader, a structured roadmap, practical checks, and an interactive linear-model lab.
+A learning studio for machine learning and AI.
 
 ## Run locally
 

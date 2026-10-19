@@ -5,7 +5,7 @@ import { connectDatabase, disconnectDatabase } from './database.js'
 async function start() {
   await connectDatabase(env.MONGODB_URI)
   const server = app.listen(env.PORT, () => {
-    console.info(`MLVerse API listening on port ${env.PORT}`)
+    console.info(`DeepNova API listening on port ${env.PORT}`)
   })
   let shuttingDown = false
   const shutdown = async () => {
@@ -21,6 +21,6 @@ async function start() {
 }
 
 start().catch((error: unknown) => {
-  console.error('MLVerse API failed to start', error instanceof Error ? error.message : 'Unknown error')
+  console.error('DeepNova API failed to start', error instanceof Error ? error.message : 'Unknown error')
   process.exit(1)
 })

@@ -15,7 +15,7 @@ import { createAccessToken, createOpaqueToken, createRefreshToken, hashToken } f
 import { sendAccountEmail } from '../utils/email.js'
 
 export const authRouter = Router()
-const refreshCookieName = 'mlverse_refresh'
+const refreshCookieName = 'deepnova_refresh'
 const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false })
 const signupLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false })
@@ -62,7 +62,7 @@ authRouter.post('/signup', signupLimiter, validateBody(signupSchema), async (req
   })
   if (verificationToken) {
     try {
-      await sendAccountEmail(email, 'Verify your MLVerse account', `Open this link within 24 hours to verify your email: ${env.CLIENT_ORIGIN}/verify-email?token=${verificationToken}`)
+      await sendAccountEmail(email, 'Verify your DeepNova account', `Open this link within 24 hours to verify your email: ${env.CLIENT_ORIGIN}/verify-email?token=${verificationToken}`)
     } catch {
       await User.deleteOne({ _id: user._id })
       throw new HttpError(503, 'Email verification is temporarily unavailable. Please try again later.')
@@ -141,7 +141,7 @@ authRouter.post('/forgot-password', resetLimiter, validateBody(forgotPasswordSch
     user.resetExpiresAt = new Date(Date.now() + 30 * 60 * 1000)
     await user.save()
     try {
-      await sendAccountEmail(email, 'Reset your MLVerse password', `Open this link within 30 minutes to reset your password: ${env.CLIENT_ORIGIN}/reset-password?token=${token}`)
+      await sendAccountEmail(email, 'Reset your DeepNova password', `Open this link within 30 minutes to reset your password: ${env.CLIENT_ORIGIN}/reset-password?token=${token}`)
     } catch (error) {
       user.resetTokenHash = undefined
       user.resetExpiresAt = undefined

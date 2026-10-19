@@ -17,7 +17,7 @@ export type LearningState = {
   persistence: 'guest' | 'server'
 }
 
-const key = 'mlverse-learning-v1'
+const key = 'deepnova-learning-v1'
 const todayKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 const today = () => todayKey(new Date())
 const initial: LearningState = { completed: [], bookmarks: [], lastLesson: 'what-is-machine-learning', activity: [], notes: {}, noteStatuses: {}, quizAttempts: [], persistence: 'guest' }
@@ -42,7 +42,7 @@ type LearningContextValue = {
 const LearningContext = createContext<LearningContextValue | null>(null)
 function readGuestState(): LearningState {
   try {
-    const saved = localStorage.getItem(key)
+    const saved = localStorage.getItem(key) ?? localStorage.getItem('mlverse-learning-v1')
     return saved ? { ...initial, ...JSON.parse(saved) as Partial<LearningState>, persistence: 'guest' } : initial
   } catch {
     return initial
