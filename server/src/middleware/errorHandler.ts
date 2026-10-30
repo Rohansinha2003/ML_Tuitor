@@ -8,7 +8,8 @@ export class HttpError extends Error {
   }
 }
 
-export const errorHandler: ErrorRequestHandler = (error: unknown, _request, response, _next) => {
+export const errorHandler: ErrorRequestHandler = (error: unknown, _request, response, next) => {
+  void next
   if (error instanceof ZodError) {
     response.status(400).json({ error: 'Invalid request', details: error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })) })
     return

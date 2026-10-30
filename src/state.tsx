@@ -106,7 +106,7 @@ export function LearningProvider({ children }: { children: ReactNode }) {
       setError(requestError(reason))
     })
     return () => { active = false }
-  }, [auth.status, auth.user?.id])
+  }, [auth.status, auth.user])
 
   useEffect(() => () => {
     for (const timer of noteTimers.current.values()) clearTimeout(timer)

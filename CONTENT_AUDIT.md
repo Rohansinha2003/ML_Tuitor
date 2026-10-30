@@ -15,9 +15,9 @@ The content store contains 17 published lessons: eight ML foundations and nine n
 | 03 — Linear regression | Expanded: slope/intercept interpretation, least-squares arithmetic, residuals and MSE calculated by hand, assumptions, runnable code, and worked solutions. |
 | 04 — Train, validation, and test data | Expanded: split roles, a 700/150/150 example, time/group leakage, train-only preprocessing, cross-validation, a runnable three-way split pipeline, and worked solutions. |
 | 05 — Gradient descent | Expanded: derivative and gradient intuition, three manual updates, learning-rate stability/oscillation, a runnable loop with matching output, and worked solutions. |
-| 06 — Overfitting and underfitting | Introductory only. The code references `X_train`, `y_train`, `X_valid`, and `y_valid` without defining a dataset or split. It lacks a concrete score table/learning curve and worked numerical example. Next: make the code standalone and demonstrate train/validation curves for model complexity. |
-| 07 — Evaluation metrics | Introductory only. It explains accuracy, precision, recall, and F1, but does not yet work a confusion matrix from counts or cover specificity, ROC/PR curves, threshold selection, calibration, regression metrics, or explainability. Next: add a stepwise imbalanced-class example and a metric-selection exercise. |
-| 08 — Neural networks | Introductory only. It includes one neuron calculation and a shape-only PyTorch example, but that example initializes random weights and does not train. There is no hand-computed multi-layer forward pass, loss calculation, backpropagation derivation, or runnable training loop. Next: calculate a tiny network by hand, then train it with a deterministic toy dataset. |
+| 06 — Overfitting and underfitting | Expanded: deterministic `make_moons` data, untouched test split, verified tree-depth score table, learning-curve reasoning, regularization/data diagnostics, worked exercises, and a model-selection mini project. |
+| 07 — Evaluation metrics | Expanded: worked confusion-matrix counts, specificity, threshold trade-offs, calibration, ROC/PR context, regression metrics, detailed solutions, and a fraud-threshold mini project. |
+| 08 — Neural networks | Expanded: hand-calculated neuron and two-layer forward pass, MSE arithmetic, complete forward/loss/backprop/update order, deterministic XOR PyTorch training example, worked exercises, and an XOR mini project. |
 
 ## Deep Learning Course
 
