@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle } from 'lucide-react'
-import { ApiError } from './api'
+import { apiUrl, ApiError } from './api'
 import { PageIntro } from './pages'
 import { useAuth } from './AuthProvider'
 
@@ -16,6 +16,10 @@ function FormMessage({ message, success = false }: { message: string; success?: 
 
 function SubmitButton({ busy, children }: { busy: boolean; children: ReactNode }) {
   return <button className="button button-dark auth-submit" type="submit" disabled={busy}>{busy && <LoaderCircle size={15} className="auth-spinner" />}{children}</button>
+}
+
+function GoogleButton({ returnTo }: { returnTo: string }) {
+  return <button className="google-auth-button" type="button" onClick={() => window.location.assign(`${apiUrl('/auth/google')}?returnTo=${encodeURIComponent(returnTo)}`)}><span className="google-mark">G</span>Continue with Google</button>
 }
 
 function errorMessage(error: unknown) {
@@ -48,6 +52,9 @@ export function LoginPage() {
       <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
       <FormMessage message={error} />
       <SubmitButton busy={busy}>Sign in <ArrowRight size={15} /></SubmitButton>
+      <div className="auth-divider"><span>or</span></div>
+      <GoogleButton returnTo={`${location.pathname}${location.search}`} />
+      <p className="auth-provider-note">Continue with Google uses the configured OAuth server.</p>
       <div className="auth-links"><Link to="/forgot-password">Forgot password?</Link><span>New here? <Link to="/signup">Create an account</Link></span></div>
     </form>
   </AuthShell>
@@ -56,6 +63,7 @@ export function LoginPage() {
 export function SignupPage() {
   const { status, signup } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -86,6 +94,9 @@ export function SignupPage() {
       <label>Confirm password<input type="password" autoComplete="new-password" required minLength={12} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
       <FormMessage message={message} success={success} />
       <SubmitButton busy={busy}>Create account <ArrowRight size={15} /></SubmitButton>
+      <div className="auth-divider"><span>or</span></div>
+      <GoogleButton returnTo={`${location.pathname}${location.search}`} />
+      <p className="auth-provider-note">Continue with Google uses the configured OAuth server.</p>
       <div className="auth-links"><span>Already registered? <Link to="/login">Sign in</Link></span></div>
     </form>
   </AuthShell>

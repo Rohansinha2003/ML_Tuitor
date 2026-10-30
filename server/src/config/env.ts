@@ -16,6 +16,9 @@ const schema = z.object({
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
   SMTP_USER: z.string().optional().or(z.literal('')),
   SMTP_PASSWORD: z.string().optional().or(z.literal('')),
+  GOOGLE_CLIENT_ID: z.string().optional().or(z.literal('')),
+  GOOGLE_CLIENT_SECRET: z.string().optional().or(z.literal('')),
+  GOOGLE_CALLBACK_URL: z.string().url().optional().or(z.literal('')),
 })
 
 const parsed = schema.safeParse(process.env)
@@ -31,4 +34,5 @@ if (parsed.data.NODE_ENV === 'production' && !parsed.data.COOKIE_SECURE) {
 export const env = {
   ...parsed.data,
   emailConfigured: Boolean(parsed.data.SMTP_HOST && parsed.data.SMTP_USER && parsed.data.SMTP_PASSWORD && parsed.data.EMAIL_FROM),
+  googleConfigured: Boolean(parsed.data.GOOGLE_CLIENT_ID && parsed.data.GOOGLE_CLIENT_SECRET && parsed.data.GOOGLE_CALLBACK_URL),
 }

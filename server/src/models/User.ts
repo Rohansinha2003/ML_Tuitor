@@ -3,7 +3,9 @@ import { Schema, model, type InferSchemaType } from 'mongoose'
 const userSchema = new Schema({
   name: { type: String, required: true, trim: true, minlength: 1, maxlength: 100 },
   email: { type: String, required: true, trim: true, lowercase: true, maxlength: 254 },
-  passwordHash: { type: String, required: true, select: false },
+  passwordHash: { type: String, required: false, select: false, default: undefined },
+  googleId: { type: String, unique: true, sparse: true, select: false, default: undefined },
+  authProvider: { type: String, enum: ['password', 'google'], default: 'password' },
   avatarUrl: { type: String, default: null, maxlength: 2048 },
   emailVerified: { type: Boolean, default: false },
   verificationTokenHash: { type: String, select: false, default: undefined },

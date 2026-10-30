@@ -2,6 +2,7 @@ import { Router, type Response } from 'express'
 import rateLimit from 'express-rate-limit'
 import bcrypt from 'bcryptjs'
 import jwt, { type JwtPayload } from 'jsonwebtoken'
+import { OAuth2Client } from 'google-auth-library'
 import { env } from '../config/env.js'
 import { Session } from '../models/Session.js'
 import { User } from '../models/User.js'
@@ -19,6 +20,8 @@ const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false })
 const signupLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false })
 const resetLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: 'draft-8', legacyHeaders: false })
+const googleStateCookieName = 'deepnova_google_state'
+const googleClient = env.googleConfigured ? new OAuth2Client(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_CALLBACK_URL) : null
 
 function cookieOptions() {
   return { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: 'strict' as const, path: '/api/auth' }
@@ -39,6 +42,10 @@ async function issueSession(userId: string, response: Response) {
 
 function clearRefreshCookie(response: Response) {
   response.clearCookie(refreshCookieName, cookieOptions())
+}
+
+function safeReturnTo(value: unknown) {
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') ? value : '/'
 }
 
 function verifyRefreshToken(token: string): JwtPayload & { sub: string; sid: string; type: 'refresh' } {
@@ -87,10 +94,44 @@ authRouter.post('/verify-email', validateBody(verifyEmailSchema), async (request
 authRouter.post('/login', loginLimiter, validateBody(loginSchema), async (request, response) => {
   const { email, password } = request.body as { email: string; password: string }
   const user = await User.findOne({ email }).select('+passwordHash')
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) throw new HttpError(401, 'Email or password is incorrect')
+  if (!user?.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) throw new HttpError(401, 'Email or password is incorrect')
   if (env.emailConfigured && !user.emailVerified) throw new HttpError(403, 'Verify your email before signing in')
   const accessToken = await issueSession(user.id, response)
   response.json({ data: { user: safeUser(user), accessToken } })
+})
+
+authRouter.get('/google', (request, response) => {
+  if (!googleClient) throw new HttpError(503, 'Google sign-in is not configured on the server')
+  const state = createOpaqueToken()
+  const returnTo = safeReturnTo(request.query.returnTo)
+  response.cookie(googleStateCookieName, `${state}.${Buffer.from(returnTo).toString('base64url')}`, {
+    httpOnly: true,
+    secure: env.COOKIE_SECURE,
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000,
+    path: '/api/auth/google',
+  })
+  response.redirect(googleClient.generateAuthUrl({ access_type: 'offline', scope: ['openid', 'email', 'profile'], state, prompt: 'select_account' }))
+})
+
+authRouter.get('/google/callback', async (request, response) => {
+  if (!googleClient) throw new HttpError(503, 'Google sign-in is not configured on the server')
+  const storedState = request.cookies?.[googleStateCookieName]
+  const [expectedState, encodedReturnTo] = typeof storedState === 'string' ? storedState.split('.') : []
+  const returnTo = safeReturnTo(encodedReturnTo ? Buffer.from(encodedReturnTo, 'base64url').toString('utf8') : '/')
+  response.clearCookie(googleStateCookieName, { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: 'lax', path: '/api/auth/google' })
+  if (!request.query.state || typeof request.query.state !== 'string' || request.query.state !== expectedState) throw new HttpError(400, 'Google sign-in state is invalid')
+  if (typeof request.query.code !== 'string') throw new HttpError(400, 'Google did not return an authorization code')
+  const { tokens } = await googleClient.getToken(request.query.code)
+  const ticket = await googleClient.verifyIdToken({ idToken: tokens.id_token!, audience: env.GOOGLE_CLIENT_ID })
+  const profile = ticket.getPayload()
+  if (!profile?.sub || !profile.email || profile.email_verified !== true) throw new HttpError(400, 'Google did not provide a verified email address')
+  const existing = await User.findOne({ email: profile.email.toLowerCase() }).select('+passwordHash +googleId')
+  if (existing && existing.googleId !== profile.sub) throw new HttpError(409, 'An account with this email already exists. Sign in with your password first.')
+  const user = existing ?? await User.create({ name: profile.name?.trim() || profile.email.split('@')[0], email: profile.email.toLowerCase(), googleId: profile.sub, authProvider: 'google', emailVerified: true, avatarUrl: profile.picture ?? null })
+  if (!user.googleId) { user.googleId = profile.sub; user.authProvider = 'google'; user.emailVerified = true; await user.save() }
+  await issueSession(user.id, response)
+  response.redirect(`${env.CLIENT_ORIGIN}${returnTo}`)
 })
 
 authRouter.post('/refresh', requireClientOrigin, async (request, response) => {
@@ -166,7 +207,7 @@ authRouter.post('/reset-password', resetLimiter, validateBody(resetPasswordSchem
 authRouter.patch('/change-password', authenticate, validateBody(changePasswordSchema), async (request, response) => {
   const { currentPassword, password } = request.body as { currentPassword: string; password: string }
   const user = await User.findById(request.auth!.userId).select('+passwordHash')
-  if (!user || !(await bcrypt.compare(currentPassword, user.passwordHash))) throw new HttpError(401, 'Current password is incorrect')
+  if (!user?.passwordHash || !(await bcrypt.compare(currentPassword, user.passwordHash))) throw new HttpError(401, 'Current password is incorrect')
   user.passwordHash = await bcrypt.hash(password, 12)
   user.passwordChangedAt = new Date()
   await user.save()

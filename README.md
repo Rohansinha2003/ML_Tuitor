@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open the URL printed by Vite. No credentials or backend are required. The production build is `npm run build`; run the configured ESLint checks with `npm run lint`.
+Open the URL printed by Vite. The frontend works in guest mode without credentials. For authentication and MongoDB persistence, copy `server/.env.example` to `server/.env`, fill in the Atlas URI and JWT secrets, then run `npm run dev:server` in a second terminal. The production build is `npm run build`; run the configured ESLint checks with `npm run lint` and the API checks with `npm run test:server`.
 
 ## What is included
 
@@ -22,6 +22,8 @@ Open the URL printed by Vite. No credentials or backend are required. The produc
 - Five interactive visual labs: linear regression, gradient descent, overfitting vs. underfitting, KNN decision boundaries, and K-means clustering. Each has responsive controls, parameter explanations, and a reset action.
 - Project briefs and interview practice prompts. Dataset licenses, attribution, and execution are not implied by these briefs.
 - Light/dark themes and mobile navigation.
+- Email/password authentication with rotating HttpOnly refresh cookies, MongoDB-backed progress, bookmarks, notes, and quiz attempts when the API is configured.
+- Google OAuth sign-in/sign-up through `/api/auth/google` when Google Cloud credentials are configured.
 
 ## Content model
 
@@ -32,6 +34,8 @@ To add a lesson, create a `Lesson` entry and add its slug to the appropriate cou
 ## Persistence and security
 
 This version stores progress in the browser's `localStorage`. It has no authentication, Supabase connection, server-side data store, or remote Python execution. PyTorch snippets are copyable examples, not executed by the app; run them in a separate Python environment with PyTorch installed. `.env.example` documents that no environment variables are needed for this demo. Do not put secrets in frontend environment variables.
+
+When signed in, progress is owned by the authenticated MongoDB user and is loaded through the Express API. Guest progress remains local. For Google OAuth, create a Google OAuth web client and add `http://localhost:5000/api/auth/google/callback` as an authorized redirect URI, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in `server/.env`. Use the HTTPS callback URL in production.
 
 ## Technology
 
