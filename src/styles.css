@@ -1194,4 +1194,339 @@ kbd { border: 1px solid var(--line); border-radius: 3px; color: var(--muted); fo
   .playground-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; gap: 15px; }.playground-workspace { grid-template-columns: 1fr; }.playground-chart { border-right: 0; border-bottom: 1px solid var(--line); padding: 15px 12px 10px; }.playground-chart-head h2 { font-size: 17px; }.chart-wrap, .svg-chart-wrap { height: 240px; }.playground-controls { padding: 14px; }.slider-control { margin: 14px 0; }.playground-explainer { padding: 12px; }.search-filters, .interview-filters { flex-wrap: wrap; }.search-filters > span { width: 100%; margin: 4px 0 0; }.project-grid { grid-template-columns: 1fr; }.project-grid .project-card:last-child { grid-column: auto; }.project-card > p { min-height: auto; }.interview-question summary { grid-template-columns: 25px 1fr 17px; gap: 7px; }.interview-question summary b { font-size: 13px; }.interview-answer { padding-left: 32px; }.command-overlay { padding-top: 60px; }.command-footer { gap: 6px; }
   .auth-page { padding-top: 48px; padding-bottom: 70px; }.auth-page .page-intro h1 { font-size: 30px; }.auth-panel { padding: 24px 18px; }.auth-links { flex-direction: column; }.profile-panel dl { grid-template-columns: 1fr; }
 }
+/* ==========================================================================
+   PROJECTS PAGE ENHANCEMENTS (BEGINNER, INTERMEDIATE, HARD)
+   ========================================================================== */
+.project-controls-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 18px 0 24px;
+  flex-wrap: wrap;
+}
+
+.project-search-box {
+  flex: 1;
+  min-width: 260px;
+  max-width: 440px;
+}
+
+.project-search-box input {
+  width: 100%;
+  height: 38px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 14px;
+  font-size: 11px;
+  transition: all 0.15s ease;
+}
+
+.project-search-box input:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px var(--green-pale);
+}
+
+.project-level-pill {
+  font: 9px 'DM Mono', monospace;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.level-beginner {
+  background: var(--green-pale);
+  color: var(--green-dark);
+  border: 1px solid rgba(28, 97, 73, 0.2);
+}
+
+.level-intermediate {
+  background: var(--orange-pale);
+  color: var(--orange);
+  border: 1px solid rgba(213, 102, 71, 0.2);
+}
+
+.level-hard {
+  background: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid rgba(126, 34, 206, 0.2);
+}
+
+:root[data-theme='dark'] .level-hard {
+  background: #3b185f;
+  color: #d8b4fe;
+  border-color: #6b21a8;
+}
+
+.project-goal {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.project-meta-box {
+  background: var(--surface-soft);
+  border-radius: 5px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.project-meta-box strong {
+  color: var(--ink);
+}
+
+.project-details-body {
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-steps-list {
+  padding-left: 18px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.project-challenge-box {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--orange);
+  background: var(--surface-soft);
+  border-radius: 0 4px 4px 0;
+}
+
+.project-challenge-box b {
+  display: block;
+  font: 8px 'DM Mono', monospace;
+  color: var(--orange);
+  margin-bottom: 4px;
+}
+
+.project-challenge-box p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+/* ==========================================================================
+   PLAYGROUND LAB LEARNING MATERIAL & CODE DEEP DIVE
+   ========================================================================== */
+.lab-learning-material {
+  margin-top: 24px;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.learning-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--green);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+
+.learning-header h3 {
+  margin: 0;
+  font: 600 16px 'Fraunces', serif;
+  color: var(--ink);
+}
+
+.learning-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.learning-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.learning-card h4 {
+  margin: 0;
+  font: 600 13px 'Fraunces', serif;
+  color: var(--ink);
+}
+
+.learning-card p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+.math-formula-box {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font: 11px 'DM Mono', monospace;
+  color: var(--green);
+  overflow-x: auto;
+}
+
+.learning-experiments-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.learning-experiments-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.exp-icon {
+  color: var(--orange);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.learning-code-wrapper {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #111a16;
+}
+
+.learning-code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: #090e0c;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.code-lang {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #7eb797;
+  font: 11px 'DM Mono', monospace;
+}
+
+.copy-code-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e2e8f0;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.copy-code-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+}
+
+.learning-code-pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  font: 11px/1.6 'DM Mono', monospace;
+  color: #d1fae5;
+}
+
+.learning-pitfall-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.learning-pitfall-box svg {
+  color: var(--orange);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.learning-pitfall-box b {
+  color: var(--ink);
+  display: block;
+  margin-bottom: 2px;
+}
+
+.learning-pitfall-box p {
+  margin: 0;
+}
+
+.playground-alert {
+  padding: 10px 12px;
+  border-radius: 5px;
+  font-size: 10px;
+  line-height: 1.5;
+  margin-top: 10px;
+}
+
+.alert-warning {
+  background: var(--orange-pale);
+  color: var(--orange);
+  border: 1px solid rgba(213, 102, 71, 0.2);
+}
+
+.alert-danger {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid rgba(185, 28, 28, 0.2);
+}
+
+:root[data-theme='dark'] .alert-danger {
+  background: #450a0a;
+  color: #fca5a5;
+  border-color: #7f1d1d;
+}
+
+@media (max-width: 768px) {
+  .learning-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

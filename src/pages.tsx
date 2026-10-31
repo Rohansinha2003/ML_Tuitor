@@ -124,14 +124,365 @@ export function NotFoundPage({ title = 'Page not found', description = 'This add
   return <div className="page-content"><PageIntro eyebrow="NOT FOUND" title={title} description={description} /><div className="empty-state"><span><Search size={21} /></span><h2>No content at this address.</h2><p>Choose a published lesson from the curriculum or return to your learning space.</p><div className="not-found-actions"><Link to="/curriculum" className="text-link">Browse curriculum <ArrowRight size={14} /></Link><Link to="/overview" className="text-link">Go to overview <ArrowRight size={14} /></Link></div></div></div>
 }
 
-const projects = [
-  { title: 'Predict student performance', level: 'BEGINNER', goal: 'Estimate exam scores from study habits and attendance, then inspect where the model is uncertain.', tags: ['Regression', 'Evaluation'], steps: ['Define the target and inspect features.', 'Split data before fitting.', 'Compare a mean baseline with linear regression.', 'Report MAE in score points.'] },
-  { title: 'House prices: baseline to better', level: 'BEGINNER', goal: 'Predict a continuous price and see how feature scale and outliers affect a linear model.', tags: ['Regression', 'Features'], steps: ['Choose a licensed public housing dataset.', 'Build a median-price baseline.', 'Fit regression and inspect residuals.', 'Try regularization on held-out data.'] },
-  { title: 'Customer churn signals', level: 'INTERMEDIATE', goal: 'Estimate which customers may leave while choosing metrics that reflect missed churn costs.', tags: ['Classification', 'Imbalance'], steps: ['Split data before preprocessing.', 'Create a logistic-regression pipeline.', 'Compare recall, precision, and PR-AUC.', 'Choose a threshold from the use case.'] },
+export type ProjectLevel = 'BEGINNER' | 'INTERMEDIATE' | 'HARD'
+
+export interface ProjectBrief {
+  title: string
+  level: ProjectLevel
+  goal: string
+  dataset: string
+  metrics: string[]
+  tags: string[]
+  steps: string[]
+  challenge: string
+}
+
+const projects: ProjectBrief[] = [
+  // -------------------------------------------------------------
+  // BEGINNER PROJECTS
+  // -------------------------------------------------------------
+  {
+    title: 'Predict student exam performance',
+    level: 'BEGINNER',
+    goal: 'Estimate final course scores from study habits, attendance, and demographics. Diagnose where the model makes large errors.',
+    dataset: 'UCI Student Performance Dataset (open license)',
+    metrics: ['MAE (Mean Absolute Error)', 'RMSE', 'R² Score'],
+    tags: ['Regression', 'EDA', 'scikit-learn', 'Baselines'],
+    steps: [
+      'Audit the data for missing values and collinear features.',
+      'Split into 80/20 train/test sets before calculating any column statistics.',
+      'Implement a simple mean baseline predictor and calculate initial baseline MAE.',
+      'Fit an Ordinary Least Squares (OLS) linear regression model.',
+      'Plot residual errors against predicted values to check for heteroscedasticity.',
+      'Report MAE in actual grade points and write a brief reflection on model limitations.',
+    ],
+    challenge: 'Add L2 Ridge regularization with cross-validated alpha to see if shrinkage reduces overfitting on small test subsets.',
+  },
+  {
+    title: 'House price valuation: baseline to regularization',
+    level: 'BEGINNER',
+    goal: 'Predict continuous property prices and understand how skewed distributions, log transforms, and outliers impact linear models.',
+    dataset: 'Ames Housing Dataset (Kaggle / OpenML)',
+    metrics: ['Log-RMSE', 'Median Absolute Error', 'Explained Variance'],
+    tags: ['Regression', 'Feature Engineering', 'Regularization'],
+    steps: [
+      'Examine price distribution skewness and apply log1p transformation to stabilize variance.',
+      'Encode categorical variables using one-hot encoding with rare category grouping.',
+      'Scale numerical features using StandardScaler inside a scikit-learn Pipeline.',
+      'Compare Ridge (L2) and Lasso (L1) regularization paths across varying penalty strengths.',
+      'Inspect Lasso coefficients to identify which features were completely eliminated.',
+      'Evaluate holdout predictions and plot top 10 most influential feature weights.',
+    ],
+    challenge: 'Identify the 5 largest prediction errors (outliers) and inspect why the model failed on those specific houses.',
+  },
+  {
+    title: 'Heart disease early risk detection',
+    level: 'BEGINNER',
+    goal: 'Classify presence of cardiovascular disease from patient biometric data while calibrating probabilities for healthcare decision thresholds.',
+    dataset: 'UCI Cleveland Heart Disease Dataset',
+    metrics: ['Recall (Sensitivity)', 'ROC-AUC', 'Brier Score'],
+    tags: ['Logistic Regression', 'Medical ML', 'Calibration'],
+    steps: [
+      'Inspect class balance and clinical feature correlations (cholesterol, resting blood pressure, max heart rate).',
+      'Handle missing values using median imputation fit strictly on training splits.',
+      'Train a Logistic Regression classifier and compute predicted probabilities.',
+      'Plot the ROC curve and choose a classification decision threshold that favors high recall.',
+      'Calibrate output probabilities using Platt scaling / Isotonic regression.',
+      'Generate a clinical confusion matrix highlighting the cost of False Negatives.',
+    ],
+    challenge: 'Adjust the classification decision threshold from 0.5 to 0.25 to maximize sensitivity while maintaining at least 70% precision.',
+  },
+  {
+    title: 'SMS spam & phishing message filter',
+    level: 'BEGINNER',
+    goal: 'Detect spam and malicious phishing SMS messages using bag-of-words tokenization, n-grams, and Multinomial Naive Bayes.',
+    dataset: 'SMS Spam Collection Dataset (UCI)',
+    metrics: ['Precision at 99% Recall', 'F1-Score', 'False Positive Rate'],
+    tags: ['NLP', 'Naive Bayes', 'TF-IDF', 'Text Mining'],
+    steps: [
+      'Preprocess raw SMS text: lowercase, remove punctuation, and extract character/word length features.',
+      'Build a TF-IDF vectorizer with unigrams and bigrams, stripping English stopwords.',
+      'Train a Multinomial Naive Bayes model with Laplace smoothing.',
+      'Inspect the top 20 words with the highest log-likelihood ratios for spam vs. ham.',
+      'Test the classifier against ambiguous real-world messages with modern slang.',
+      'Evaluate false positive rates to ensure non-spam messages are never discarded.',
+    ],
+    challenge: 'Compare Multinomial Naive Bayes against a linear SVM and inspect which tokens cause misclassifications in edge cases.',
+  },
+
+  // -------------------------------------------------------------
+  // INTERMEDIATE PROJECTS
+  // -------------------------------------------------------------
+  {
+    title: 'Customer churn signals & cost-sensitive loss',
+    level: 'INTERMEDIATE',
+    goal: 'Predict subscriber churn for a subscription service while optimizing a custom financial loss matrix rather than standard 0-1 accuracy.',
+    dataset: 'Telco Customer Churn Dataset (IBM / Kaggle)',
+    metrics: ['PR-AUC (Precision-Recall)', 'Expected Financial Value', 'F1-Macro'],
+    tags: ['XGBoost', 'LightGBM', 'Cost-Sensitive', 'SHAP'],
+    steps: [
+      'Engineer tenure, contract duration, payment method, and monthly charge ratios.',
+      'Formulate a 2x2 financial cost-benefit matrix ($cost of retention offer vs. $lost customer lifetime value).',
+      'Train LightGBM and XGBoost gradient-boosted decision trees with early stopping.',
+      'Perform stratified 5-fold cross-validation and optimize hyperparameters with Bayesian Search.',
+      'Use SHAP (SHapley Additive exPlanations) values to explain individual customer risk drivers.',
+      'Select the optimal decision threshold that maximizes total retained business revenue.',
+    ],
+    challenge: 'Implement an Uplift Model that predicts which customers will stay specifically because of an intervention rather than organic churn.',
+  },
+  {
+    title: 'Credit card fraud detection with extreme imbalance',
+    level: 'INTERMEDIATE',
+    goal: 'Identify fraudulent card transactions where positive cases represent only 0.17% of total volume, using custom resampling and isolation forests.',
+    dataset: 'European Cardholders Credit Card Fraud Dataset (Kaggle)',
+    metrics: ['Average Precision (PR-AUC)', 'Recall at 95% Precision', 'Precision@K'],
+    tags: ['Imbalanced Learning', 'Anomaly Detection', 'Isolation Forest'],
+    steps: [
+      'Explore PCA-transformed transaction features and analyze severe 578:1 class skewness.',
+      'Establish why standard accuracy is completely deceptive (a dummy model gets 99.83% accuracy).',
+      'Implement cost-sensitive class weights in Logistic Regression and Random Forest.',
+      'Compare oversampling (SMOTE) strictly on training folds against undersampling majority classes.',
+      'Train an unsupervised Isolation Forest model to detect anomalous spending vectors.',
+      'Plot Precision-Recall curves to evaluate performance across the entire operating range.',
+    ],
+    challenge: 'Implement Focal Loss in PyTorch to dynamically down-weight the loss assigned to easy majority-class examples during training.',
+  },
+  {
+    title: 'Chest X-ray diagnostic vision classifier',
+    level: 'INTERMEDIATE',
+    goal: 'Classify bacterial vs. viral pneumonia from chest radiographs using deep convolutional transfer learning and Grad-CAM interpretability.',
+    dataset: 'Chest X-Ray Images Dataset (NIH / Kaggle)',
+    metrics: ['ROC-AUC', 'Sensitivity / Specificity', 'Inference Latency'],
+    tags: ['Computer Vision', 'PyTorch', 'Transfer Learning', 'Grad-CAM'],
+    steps: [
+      'Preprocess medical images: normalization, random rotations, horizontal flips, and affine transforms.',
+      'Load a pre-trained ResNet-50 / EfficientNet backbone and replace the classification head.',
+      'Train using a two-stage regime: freeze base layers for 5 epochs, then unfreeze and fine-tune with a low learning rate.',
+      'Implement Grad-CAM to visualize activation heatmaps over lung regions on test scans.',
+      'Verify whether model focus aligns with anatomical pathology or spurious edge artifacts.',
+      'Export the trained model to ONNX runtime and measure inference latency on CPU vs. GPU.',
+    ],
+    challenge: 'Apply test-time augmentation (TTA) and measure if ensemble averaging of flipped scans boosts AUROC on difficult borderline cases.',
+  },
+  {
+    title: 'E-commerce hybrid recommendation engine',
+    level: 'INTERMEDIATE',
+    goal: 'Build a two-stage recommendation pipeline: implicit feedback matrix factorization for candidate generation followed by gradient-boosted re-ranking.',
+    dataset: 'MovieLens 1M / Instacart Market Basket (Open License)',
+    metrics: ['Hit Rate@10', 'NDCG@10', 'Catalog Coverage'],
+    tags: ['Recommender Systems', 'Matrix Factorization', 'Two-Stage Pipeline'],
+    steps: [
+      'Construct a sparse user-item interaction matrix from implicit click/purchase logs.',
+      'Train an Alternating Least Squares (ALS) matrix factorization model to generate top-100 candidate items.',
+      'Extract user features (recency, frequency, spend) and item features (category, popularity, price).',
+      'Train a LightGBM ranker on candidate pairs using LambdaMART pairwise ranking objective.',
+      'Evaluate offline Hit Rate@10 and Normalized Discounted Cumulative Gain (NDCG@10).',
+      'Analyze diversity vs. popularity bias to ensure cold-start items receive discovery impressions.',
+    ],
+    challenge: 'Implement Approximate Nearest Neighbors (ANN) indexing with HNSW or Faiss to serve candidate embeddings under 5ms.',
+  },
+
+  // -------------------------------------------------------------
+  // HARD / ADVANCED PROJECTS
+  // -------------------------------------------------------------
+  {
+    title: 'Domain-adapted small LLM fine-tuning with QLoRA & DPO',
+    level: 'HARD',
+    goal: 'Fine-tune an open-source 3B–7B parameter LLM on technical domain data using 4-bit Quantized LoRA, followed by Direct Preference Optimization (DPO).',
+    dataset: 'Domain Technical Corpus + Chosen/Rejected Preference Pairs (HuggingFace)',
+    metrics: ['Perplexity (PPL)', 'Win Rate vs. Base Model', 'Hallucination Rate'],
+    tags: ['GenAI', 'QLoRA', 'DPO', 'Transformers', 'PEFT', 'PyTorch'],
+    steps: [
+      'Format domain instructional data into chat templates with system, user, and assistant turns.',
+      'Quantize the base model (e.g. Llama 3 8B or Mistral 7B) to 4-bit NormalFloat using bitsandbytes.',
+      'Attach Low-Rank Adaptation (LoRA) matrices to self-attention and MLP projection layers.',
+      'Execute Supervised Fine-Tuning (SFT) with cosine learning rate schedule and gradient accumulation.',
+      'Curate preference pairs (chosen vs. rejected responses) and run Direct Preference Optimization (DPO).',
+      'Benchmark hallucination rates and evaluate reasoning benchmarks against the un-tuned base model.',
+    ],
+    challenge: 'Merge LoRA adapters into the 16-bit base weights and quantize into GGUF format for local edge inference with llama.cpp.',
+  },
+  {
+    title: 'Production-grade RAG with hybrid search & reranking',
+    level: 'HARD',
+    goal: 'Architect a multi-document Question-Answering system combining dense vector embeddings with sparse BM25 lexical search and cross-encoder re-ranking.',
+    dataset: 'SEC 10-K Financial Filings or ArXiv AI Papers (Public Domain)',
+    metrics: ['Ragas Faithfulness', 'Context Precision', 'Answer Relevancy'],
+    tags: ['RAG', 'Vector Search', 'Hybrid Retrieval', 'Cross-Encoder', 'LangChain'],
+    steps: [
+      'Implement recursive chunking with 15% overlap respecting markdown headers and tables.',
+      'Generate dense vector embeddings (e.g. BAAI/bge-large-en) and index into a vector store (Chroma/FAISS).',
+      'Build a sparse BM25 index over the same chunks for exact keyword, ticker symbol, and acronym matches.',
+      'Implement Reciprocal Rank Fusion (RRF) to merge dense semantic and sparse lexical search rankings.',
+      'Pass top-25 merged results through a Cross-Encoder reranker to extract top-4 high-relevance chunks.',
+      'Prompt an LLM with strict grounding constraints and run automated Ragas evaluation benchmarks.',
+    ],
+    challenge: 'Add self-reflective query expansion and HyDE (Hypothetical Document Embeddings) to handle ambiguous user queries.',
+  },
+  {
+    title: 'Multimodal zero-shot image & text retrieval with CLIP',
+    level: 'HARD',
+    goal: 'Implement a contrastive visual-semantic shared embedding space to perform cross-modal search (text-to-image and image-to-image) with FAISS vector indexing.',
+    dataset: 'MS-COCO / Flickr30k (Creative Commons)',
+    metrics: ['Recall@1', 'Recall@5', 'MRR (Mean Reciprocal Rank)'],
+    tags: ['Multimodal AI', 'CLIP', 'Contrastive Learning', 'FAISS', 'Embeddings'],
+    steps: [
+      'Construct a paired image-text data loader with batch-wise contrastive negative sampling.',
+      'Compute normalized image embeddings from a Vision Transformer (ViT) and text embeddings from a Transformer.',
+      'Calculate the symmetric cosine similarity matrix and apply temperature-scaled cross-entropy loss.',
+      'Index 50,000 image vectors into an HNSW (Hierarchical Navigable Small World) FAISS graph.',
+      'Implement natural language text search querying the image index in sub-10ms latency.',
+      'Evaluate Zero-Shot classification accuracy across unseen image categories without fine-tuning.',
+    ],
+    challenge: 'Implement image + text query arithmetic (e.g., Image of a dog + "sunglasses" = retrieved image of dog wearing sunglasses).',
+  },
+  {
+    title: 'Deep Q-learning for autonomous dynamic grid navigation',
+    level: 'HARD',
+    goal: 'Train an autonomous reinforcement learning agent to navigate stochastic environments with dynamic obstacles using Double DQN and Prioritized Experience Replay.',
+    dataset: 'Gymnasium MiniGrid / Highway-env Environment',
+    metrics: ['Average Cumulative Reward', 'Success Rate', 'Sample Efficiency'],
+    tags: ['Reinforcement Learning', 'Deep Q-Networks', 'Gymnasium', 'PyTorch'],
+    steps: [
+      'Define Markov Decision Process (MDP): state space observations, discrete actions, and sparse reward signals.',
+      'Construct a Q-Network with convolutional or MLP layers to approximate action-value function Q(s, a).',
+      'Implement a Prioritized Experience Replay (PER) buffer using a SumTree data structure.',
+      'Decouple action selection from action evaluation using a separate Target Network with Polyak soft updates (Double DQN).',
+      'Implement an epsilon-greedy exploration schedule with exponential decay over training episodes.',
+      'Record reward trajectories, evaluate against a random agent baseline, and visualize agent policy paths.',
+    ],
+    challenge: 'Upgrade architecture to Dueling DQN with separate Value V(s) and Advantage A(s, a) streams to accelerate policy convergence.',
+  },
 ]
 
 export function ProjectsPage() {
-  return <div className="page-content"><PageIntro eyebrow="BUILD SOMETHING REAL" title="Small projects. Real thinking." description="Start with a clear question, make a baseline, and learn to trust the evidence more than the score." action={<span className="content-counter">3 GUIDED BRIEFS</span>} /><div className="collection-callout"><FlaskConical size={18} /><p>These are project briefs, not bundled datasets or tested code. Verify each dataset’s source, license, and attribution before using it.</p></div><div className="project-grid">{projects.map((project, index) => <article className="project-card" key={project.title}><div className="project-index">0{index + 1}<span>{project.level}</span></div><h2>{project.title}</h2><p>{project.goal}</p><div className="project-tags">{project.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><details><summary>See the project outline <ChevronDown size={14} /></summary><ol>{project.steps.map((step) => <li key={step}>{step}</li>)}</ol><div className="project-ladder"><b>BEGINNER → INTERMEDIATE → ADVANCED</b><small>Compare a baseline, add cross-validation, then write a model card.</small></div></details></article>)}</div></div>
+  const [levelFilter, setLevelFilter] = useState<'ALL' | ProjectLevel>('ALL')
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const filteredProjects = projects.filter((project) => {
+    const matchesLevel = levelFilter === 'ALL' || project.level === levelFilter
+    const matchesSearch =
+      !searchQuery.trim() ||
+      project.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      project.goal.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      project.tags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
+    return matchesLevel && matchesSearch
+  })
+
+  const counts = {
+    ALL: projects.length,
+    BEGINNER: projects.filter((p) => p.level === 'BEGINNER').length,
+    INTERMEDIATE: projects.filter((p) => p.level === 'INTERMEDIATE').length,
+    HARD: projects.filter((p) => p.level === 'HARD').length,
+  }
+
+  return (
+    <div className="page-content projects-page">
+      <PageIntro
+        eyebrow="PORTFOLIO LABS"
+        title="Real-world engineering projects."
+        description="From foundational linear models to fine-tuning modern LLMs, multimodal retrieval, and deep reinforcement learning. Complete with architecture roadmaps, metrics, and stretch challenges."
+        action={<span className="content-counter">{projects.length} GUIDED BRIEFS</span>}
+      />
+
+      <div className="collection-callout">
+        <FlaskConical size={18} />
+        <p>
+          Each project brief includes target evaluation metrics, datasets with open licenses, execution roadmaps, and an advanced engineering challenge. Pick a brief and build it locally in Python, PyTorch, or Jupyter.
+        </p>
+      </div>
+
+      {/* Filter and Search Controls */}
+      <div className="project-controls-bar">
+        <div className="segmented-control" role="group" aria-label="Filter projects by difficulty">
+          {(['ALL', 'BEGINNER', 'INTERMEDIATE', 'HARD'] as const).map((lvl) => (
+            <button
+              key={lvl}
+              type="button"
+              className={levelFilter === lvl ? 'segment-active' : ''}
+              onClick={() => setLevelFilter(lvl)}
+            >
+              {lvl === 'ALL' ? 'All levels' : lvl.charAt(0) + lvl.slice(1).toLowerCase()} ({counts[lvl]})
+            </button>
+          ))}
+        </div>
+
+        <div className="project-search-box">
+          <input
+            type="text"
+            placeholder="Search by topic, model, or tag (e.g. LLM, Vision, XGBoost)..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Projects Grid */}
+      <div className="project-grid">
+        {filteredProjects.map((project, index) => (
+          <article className="project-card" key={project.title}>
+            <div className="project-index">
+              <span>0{index + 1}</span>
+              <span className={`project-level-pill level-${project.level.toLowerCase()}`}>
+                {project.level}
+              </span>
+            </div>
+
+            <h2>{project.title}</h2>
+            <p className="project-goal">{project.goal}</p>
+
+            <div className="project-meta-box">
+              <div>
+                <strong>Dataset:</strong> {project.dataset}
+              </div>
+              <div>
+                <strong>Key Metrics:</strong> {project.metrics.join(' · ')}
+              </div>
+            </div>
+
+            <div className="project-tags">
+              {project.tags.map((tag) => (
+                <span key={tag}>{tag}</span>
+              ))}
+            </div>
+
+            <details>
+              <summary>
+                <span>View execution roadmap & steps</span>
+                <ChevronDown size={14} />
+              </summary>
+              <div className="project-details-body">
+                <ol className="project-steps-list">
+                  {project.steps.map((step, idx) => (
+                    <li key={idx}>{step}</li>
+                  ))}
+                </ol>
+
+                <div className="project-challenge-box">
+                  <b>⚡ EXPERT STRETCH GOAL:</b>
+                  <p>{project.challenge}</p>
+                </div>
+              </div>
+            </details>
+          </article>
+        ))}
+
+        {filteredProjects.length === 0 && (
+          <div className="empty-state" style={{ gridColumn: '1 / -1' }}>
+            <span><Search size={22} /></span>
+            <h2>No projects match your filter.</h2>
+            <p>Try clearing your search query or selecting "All levels" to see all 12 projects.</p>
+            <button
+              className="button button-dark"
+              onClick={() => { setLevelFilter('ALL'); setSearchQuery('') }}
+            >
+              Reset filters
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 const questions = [
