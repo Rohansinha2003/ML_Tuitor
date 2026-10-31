@@ -13,6 +13,9 @@ process.env.CLIENT_ORIGIN = 'http://localhost:5173'
 process.env.JWT_ACCESS_SECRET = 'test-access-secret-that-is-more-than-thirty-two-bytes'
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-that-is-more-than-thirty-two-bytes'
 process.env.COOKIE_SECURE = 'false'
+process.env.SMTP_USER = ''
+process.env.SMTP_PASSWORD = ''
+process.env.EMAIL_FROM = ''
 
 let app: (typeof import('../src/app.js'))['app']
 beforeAll(async () => {

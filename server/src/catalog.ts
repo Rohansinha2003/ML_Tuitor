@@ -1,4 +1,4 @@
-import { lessons, modules } from '../../src/content/lessons.ts'
+import { lessons, modules } from '../../src/content/lessons'
 
 export const lessonBySlug = new Map(lessons.map((lesson) => [lesson.slug, lesson]))
 export const publishedLessonSlugs = new Set(lessonBySlug.keys())
