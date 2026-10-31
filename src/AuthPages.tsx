@@ -36,13 +36,13 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const destination = search.get('returnTo') ?? (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/'
-  if (status === 'authenticated') return <Navigate to={destination.startsWith('/') ? destination : '/'} replace />
+  const destination = search.get('returnTo') ?? (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/overview'
+  if (status === 'authenticated') return <Navigate to={destination.startsWith('/') ? destination : '/overview'} replace />
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true)
     setError('')
-    try { await login(email, password); navigate(destination.startsWith('/') ? destination : '/', { replace: true }) }
+    try { await login(email, password); navigate(destination.startsWith('/') ? destination : '/overview', { replace: true }) }
     catch (reason) { setError(errorMessage(reason)) }
     finally { setBusy(false) }
   }
@@ -71,7 +71,7 @@ export function SignupPage() {
   const [message, setMessage] = useState('')
   const [success, setSuccess] = useState(false)
   const [busy, setBusy] = useState(false)
-  if (status === 'authenticated') return <Navigate to="/" replace />
+  if (status === 'authenticated') return <Navigate to="/overview" replace />
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true)
@@ -82,7 +82,7 @@ export function SignupPage() {
       if (result.requiresEmailVerification) {
         setSuccess(true)
         setMessage('Check your email for a verification link before signing in.')
-      } else navigate('/', { replace: true })
+      } else navigate('/overview', { replace: true })
     } catch (reason) { setMessage(errorMessage(reason)) }
     finally { setBusy(false) }
   }

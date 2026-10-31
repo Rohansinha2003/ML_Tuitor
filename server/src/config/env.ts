@@ -4,9 +4,9 @@ import { z } from 'zod'
 dotenv.config()
 
 const schema = z.object({
-  PORT: z.coerce.number().int().min(1).max(65535).default(5000),
+  PORT: z.coerce.number().int().min(1).max(65535).default(5001),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  MONGODB_URI: z.string().min(1),
+  MONGODB_URI: z.string().min(1).optional().or(z.literal('')),
   CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),

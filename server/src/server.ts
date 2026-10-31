@@ -2,8 +2,18 @@ import { app } from './app.js'
 import { env } from './config/env.js'
 import { connectDatabase, disconnectDatabase } from './database.js'
 
+async function resolveMongoUri(): Promise<string> {
+  if (env.MONGODB_URI) return env.MONGODB_URI
+  // In development, use an in-memory MongoDB server when no URI is configured
+  const { MongoMemoryServer } = await import('mongodb-memory-server')
+  const memServer = await MongoMemoryServer.create()
+  console.info('⚡ Using in-memory MongoDB (data will not persist across restarts)')
+  return memServer.getUri()
+}
+
 async function start() {
-  await connectDatabase(env.MONGODB_URI)
+  const mongoUri = await resolveMongoUri()
+  await connectDatabase(mongoUri)
   const server = app.listen(env.PORT, () => {
     console.info(`DeepNova API listening on port ${env.PORT}`)
   })

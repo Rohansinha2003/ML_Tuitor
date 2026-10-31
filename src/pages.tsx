@@ -121,7 +121,7 @@ export function SearchPage() {
 }
 
 export function NotFoundPage({ title = 'Page not found', description = 'This address does not match a page in DeepNova.' }: { title?: string; description?: string }) {
-  return <div className="page-content"><PageIntro eyebrow="NOT FOUND" title={title} description={description} /><div className="empty-state"><span><Search size={21} /></span><h2>No content at this address.</h2><p>Choose a published lesson from the curriculum or return to your learning space.</p><div className="not-found-actions"><Link to="/curriculum" className="text-link">Browse curriculum <ArrowRight size={14} /></Link><Link to="/" className="text-link">Go to overview <ArrowRight size={14} /></Link></div></div></div>
+  return <div className="page-content"><PageIntro eyebrow="NOT FOUND" title={title} description={description} /><div className="empty-state"><span><Search size={21} /></span><h2>No content at this address.</h2><p>Choose a published lesson from the curriculum or return to your learning space.</p><div className="not-found-actions"><Link to="/curriculum" className="text-link">Browse curriculum <ArrowRight size={14} /></Link><Link to="/overview" className="text-link">Go to overview <ArrowRight size={14} /></Link></div></div></div>
 }
 
 const projects = [

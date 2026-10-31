@@ -7,6 +7,7 @@ import { AuthProvider } from './AuthProvider'
 import { Dashboard, Curriculum, LessonPage, SearchPage, ProjectsPage, InterviewPage, RevisionPage, NotFoundPage } from './pages'
 import { PlaygroundLab } from './PlaygroundLab'
 import { ForgotPasswordPage, LoginPage, ProfilePage, ProtectedRoute, ResetPasswordPage, SignupPage, VerifyEmailPage } from './AuthPages'
+import { LandingPage } from './LandingPage'
 import { useAuth } from './AuthProvider'
 
 function App() {
@@ -34,13 +35,18 @@ function AppFrame() {
   }, [])
   useEffect(() => { setMenuOpen(false); window.scrollTo({ top: 0 }) }, [location.pathname])
   const openLesson = (slug: string) => { navigate(`/lesson/${slug}`); setSearchOpen(false) }
+
+  if (location.pathname === '/') {
+    return <LandingPage theme={theme} setTheme={setTheme} />
+  }
+
   return <div className="app-frame">
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
       <Link to="/" className="brand"><span className="brand-mark"><Layers3 size={18} /></span><span className="brand-name">deep<span>nova</span></span><span className="brand-edition">FIELD NOTES 01</span></Link>
       <button className="workspace-switch" onClick={() => setSearchOpen(true)}><span className="workspace-avatar">D</span><span><b>My learning</b><small>Personal workspace</small></span><span className="workspace-caret">⌄</span></button>
       <div className="nav-label">LEARN</div>
       <nav className="primary-nav" aria-label="Main navigation">
-        <SidebarLink to="/" icon={<Compass size={17} />} label="Overview" />
+        <SidebarLink to="/overview" icon={<Compass size={17} />} label="Overview" />
         <SidebarLink to="/curriculum" icon={<BookOpen size={17} />} label="Curriculum" />
         <SidebarLink to="/playground" icon={<FlaskConical size={17} />} label="Playground" />
         <SidebarLink to="/projects" icon={<Code2 size={17} />} label="Projects" />
@@ -56,7 +62,7 @@ function AppFrame() {
     {menuOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <main className="main-shell">
       <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>DEEPNOVA</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>{auth.status === 'authenticated' ? <Link to="/profile" className="auth-nav-link">{auth.user?.name.split(' ')[0]}</Link> : auth.status === 'guest' ? <Link to="/login" className="auth-nav-link">Sign in</Link> : <span className="auth-status" role="status">Checking session</span>}<span className="top-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span></header>
-      <Routes><Route path="/" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="/login" element={<LoginPage />} /><Route path="/signup" element={<SignupPage />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="/verify-email" element={<VerifyEmailPage />} /><Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} /><Route path="*" element={<NotFoundPage />} /></Routes>
+      <Routes><Route path="/overview" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="/login" element={<LoginPage />} /><Route path="/signup" element={<SignupPage />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="/verify-email" element={<VerifyEmailPage />} /><Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} /><Route path="*" element={<NotFoundPage />} /></Routes>
       <footer className="app-footer"><span>DEEPNOVA <i>·</i> Learn by understanding</span><span>Made for the long way in.</span></footer>
     </main>
     {searchOpen && <CommandSearch close={() => setSearchOpen(false)} openLesson={openLesson} />}

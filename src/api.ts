@@ -1,6 +1,6 @@
 type ApiEnvelope<T> = { data: T } | { error: string; details?: { path: string; message: string }[] }
 
-const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000/api'
+const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5001/api'
 let accessToken: string | null = null
 
 export class ApiError extends Error {
