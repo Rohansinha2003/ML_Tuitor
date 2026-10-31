@@ -12,7 +12,7 @@ import { requireClientOrigin } from '../middleware/origin.js'
 import { validateBody } from '../middleware/validate.js'
 import { changePasswordSchema, forgotPasswordSchema, loginSchema, resetPasswordSchema, signupSchema, verifyEmailSchema } from '../validators/schemas.js'
 import { createAccessToken, createOpaqueToken, createRefreshToken, hashToken } from '../utils/tokens.js'
-import { sendAccountEmail } from '../utils/email.js'
+import { sendAccountEmail, sendWelcomeEmail, sendWelcomeVerificationEmail } from '../utils/email.js'
 
 export const authRouter = Router()
 const refreshCookieName = 'deepnova_refresh'
@@ -68,13 +68,20 @@ authRouter.post('/signup', signupLimiter, validateBody(signupSchema), async (req
   })
   if (verificationToken) {
     try {
-      await sendAccountEmail(email, 'Verify your DeepNova account', `Open this link within 24 hours to verify your email: ${env.CLIENT_ORIGIN}/verify-email?token=${verificationToken}`)
+      await sendWelcomeVerificationEmail(email, name, verificationToken)
     } catch {
       await User.deleteOne({ _id: user._id })
       throw new HttpError(503, 'Email verification is temporarily unavailable. Please try again later.')
     }
     response.status(201).json({ data: { user: safeUser(user), requiresEmailVerification: true } })
     return
+  }
+  if (env.emailConfigured) {
+    try {
+      await sendWelcomeEmail(email, name)
+    } catch (error) {
+      console.warn('Welcome email delivery failed:', error instanceof Error ? error.message : 'Unknown error')
+    }
   }
   const accessToken = await issueSession(user.id, response)
   response.status(201).json({ data: { user: safeUser(user), accessToken, requiresEmailVerification: false } })
@@ -88,6 +95,13 @@ authRouter.post('/verify-email', validateBody(verifyEmailSchema), async (request
     { new: true },
   )
   if (!user) throw new HttpError(400, 'Verification link is invalid or expired')
+  if (env.emailConfigured) {
+    try {
+      await sendWelcomeEmail(user.email, user.name)
+    } catch (error) {
+      console.warn('Welcome confirmation email delivery failed:', error instanceof Error ? error.message : 'Unknown error')
+    }
+  }
   response.json({ data: { user: safeUser(user) } })
 })
 
@@ -128,8 +142,16 @@ authRouter.get('/google/callback', async (request, response) => {
   if (!profile?.sub || !profile.email || profile.email_verified !== true) throw new HttpError(400, 'Google did not provide a verified email address')
   const existing = await User.findOne({ email: profile.email.toLowerCase() }).select('+passwordHash +googleId')
   if (existing && existing.googleId !== profile.sub) throw new HttpError(409, 'An account with this email already exists. Sign in with your password first.')
+  const isNewUser = !existing
   const user = existing ?? await User.create({ name: profile.name?.trim() || profile.email.split('@')[0], email: profile.email.toLowerCase(), googleId: profile.sub, authProvider: 'google', emailVerified: true, avatarUrl: profile.picture ?? null })
   if (!user.googleId) { user.googleId = profile.sub; user.authProvider = 'google'; user.emailVerified = true; await user.save() }
+  if (isNewUser && env.emailConfigured) {
+    try {
+      await sendWelcomeEmail(user.email, user.name)
+    } catch (error) {
+      console.warn('Welcome email delivery failed for Google user:', error instanceof Error ? error.message : 'Unknown error')
+    }
+  }
   await issueSession(user.id, response)
   response.redirect(`${env.CLIENT_ORIGIN}${returnTo}`)
 })
