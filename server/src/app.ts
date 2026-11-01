@@ -43,3 +43,5 @@ app.use('/api/notes', noteRouter)
 app.use('/api/quizzes/attempts', quizRouter)
 app.use((_request, response) => response.status(404).json({ error: 'API route not found' }))
 app.use(errorHandler)
+
+export default app
