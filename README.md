@@ -13,6 +13,8 @@ npm run dev
 
 Open the URL printed by Vite. The frontend works in guest mode without credentials. For authentication and MongoDB persistence, copy `server/.env.example` to `server/.env`, fill in the Atlas URI and JWT secrets, then run `npm run dev:server` in a second terminal. The production build is `npm run build`; run the configured ESLint checks with `npm run lint` and the API checks with `npm run test:server`.
 
+The frontend uses `/api` by default. Vite proxies that path to `http://localhost:5001` during local development, and Vercel routes it to the bundled Express function in `api/index.js`. Set `VITE_API_BASE_URL` only when the API is hosted separately.
+
 ## What is included
 
 - Seventeen authored lessons across ML foundations and a Deep Learning sequence from perceptrons through transformers, with plain-language explanations, worked examples, KaTeX formulas, PyTorch snippets, practice answers, quizzes, takeaways, interview questions, and mini projects.
@@ -35,7 +37,11 @@ To add a lesson, create a `Lesson` entry and add its slug to the appropriate cou
 
 This version stores progress in the browser's `localStorage`. It has no authentication, Supabase connection, server-side data store, or remote Python execution. PyTorch snippets are copyable examples, not executed by the app; run them in a separate Python environment with PyTorch installed. `.env.example` documents that no environment variables are needed for this demo. Do not put secrets in frontend environment variables.
 
-When signed in, progress is owned by the authenticated MongoDB user and is loaded through the Express API. Guest progress remains local. For Google OAuth, create a Google OAuth web client and add `http://localhost:5000/api/auth/google/callback` as an authorized redirect URI, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in `server/.env`. Use the HTTPS callback URL in production.
+When signed in, progress is owned by the authenticated MongoDB user and is loaded through the Express API. Guest progress remains local. For Google OAuth, create a Google OAuth web client and add `http://localhost:5001/api/auth/google/callback` as an authorized redirect URI, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in `server/.env`. Use the HTTPS callback URL in production.
+
+## Vercel deployment
+
+Import the repository into Vercel with the default root directory and build command (`npm run build`). Configure the server environment variables from `server/.env.example` in the Vercel project settings, including a persistent `MONGODB_URI` and strong JWT secrets. Keep `VITE_API_BASE_URL` unset so browser requests remain same-origin. If Google sign-in is enabled, use the deployed HTTPS callback URL for `GOOGLE_CALLBACK_URL`.
 
 ## Technology
 

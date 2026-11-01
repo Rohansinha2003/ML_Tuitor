@@ -3,6 +3,8 @@ import { z } from 'zod'
 
 dotenv.config()
 
+const defaultAccessSecret = 'deepnova_default_jwt_access_secret_32_bytes_long_min'
+const defaultRefreshSecret = 'deepnova_default_jwt_refresh_secret_32_bytes_long_min'
 const defaultOrigin =
   process.env.CLIENT_ORIGIN ||
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined) ||
@@ -18,10 +20,10 @@ const schema = z.object({
   MONGODB_URI: z.string().min(1).optional().or(z.literal('')),
   CLIENT_ORIGIN: z.string().url().default(defaultOrigin),
   JWT_ACCESS_SECRET: z.string().min(32).default(() => {
-    return process.env.JWT_ACCESS_SECRET || 'deepnova_default_jwt_access_secret_32_bytes_long_min'
+    return process.env.JWT_ACCESS_SECRET || defaultAccessSecret
   }),
   JWT_REFRESH_SECRET: z.string().min(32).default(() => {
-    return process.env.JWT_REFRESH_SECRET || 'deepnova_default_jwt_refresh_secret_32_bytes_long_min'
+    return process.env.JWT_REFRESH_SECRET || defaultRefreshSecret
   }),
   COOKIE_SECURE: z.enum(['true', 'false']).default(defaultCookieSecure ? 'true' : 'false').transform((value) => value === 'true'),
   EMAIL_FROM: z.string().email().optional().or(z.literal('')),
@@ -38,6 +40,13 @@ const parsed = schema.safeParse(process.env)
 if (!parsed.success) {
   const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('\n')
   throw new Error(`Invalid backend environment configuration:\n${issues}`)
+}
+
+if (
+  parsed.data.NODE_ENV === 'production' &&
+  (parsed.data.JWT_ACCESS_SECRET === defaultAccessSecret || parsed.data.JWT_REFRESH_SECRET === defaultRefreshSecret)
+) {
+  throw new Error('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be set to unique values in production')
 }
 
 if (parsed.data.NODE_ENV === 'production' && !parsed.data.COOKIE_SECURE) {
