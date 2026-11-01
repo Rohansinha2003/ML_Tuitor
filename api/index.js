@@ -61,7 +61,6 @@ var HttpError = class extends Error {
     this.status = status;
     this.name = "HttpError";
   }
-  status;
 };
 var errorHandler = (error, _request, response, next) => {
   void next;
