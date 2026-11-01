@@ -12,7 +12,7 @@ import { requireClientOrigin } from '../middleware/origin.js'
 import { validateBody } from '../middleware/validate.js'
 import { changePasswordSchema, forgotPasswordSchema, loginSchema, resetPasswordSchema, signupSchema, verifyEmailSchema } from '../validators/schemas.js'
 import { createAccessToken, createOpaqueToken, createRefreshToken, hashToken } from '../utils/tokens.js'
-import { sendAccountEmail, sendPasswordResetEmail, sendWelcomeEmail, sendWelcomeVerificationEmail } from '../utils/email.js'
+import { sendPasswordResetEmail, sendWelcomeEmail, sendWelcomeVerificationEmail } from '../utils/email.js'
 
 export const authRouter = Router()
 const refreshCookieName = 'deepnova_refresh'

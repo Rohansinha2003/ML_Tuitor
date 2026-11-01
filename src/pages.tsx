@@ -137,6 +137,8 @@ export interface ProjectBrief {
   challenge: string
 }
 
+const projectSlug = (title: string) => title.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
 const projects: ProjectBrief[] = [
   // -------------------------------------------------------------
   // BEGINNER PROJECTS
@@ -430,6 +432,9 @@ export function ProjectsPage() {
 
             <h2>{project.title}</h2>
             <p className="project-goal">{project.goal}</p>
+            <Link className="project-open-link" to={`/projects/${projectSlug(project.title)}`}>
+              Open full project guide <ArrowRight size={13} />
+            </Link>
 
             <div className="project-meta-box">
               <div>
@@ -480,6 +485,91 @@ export function ProjectsPage() {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+export function ProjectDetailPage() {
+  const { slug } = useParams()
+  const project = projects.find((item) => projectSlug(item.title) === slug)
+
+  if (!project) {
+    return <NotFoundPage title="Project not found" description="This project brief may have moved or is not published yet." />
+  }
+
+  const learningOutcomes = [
+    `Build a reproducible ${project.tags[0].toLowerCase()} workflow from raw data to evaluation.`,
+    `Explain model behavior using ${project.tags.slice(1, 3).join(' and ')} rather than relying on a single score.`,
+    'Communicate limitations, data assumptions, and the next experiment you would run.',
+  ]
+  const deliverables = [
+    'A clean repository with a reproducible README and environment file.',
+    'An exploratory analysis notebook with data-quality decisions recorded.',
+    `A training script and evaluation report covering ${project.metrics.join(', ')}.`,
+    'A short model card describing intended use, failure modes, and ethical considerations.',
+  ]
+  const pitfalls = [
+    'Split data before fitting preprocessing steps or selecting features.',
+    'Compare against a simple baseline before celebrating model improvements.',
+    'Keep the final test set untouched while choosing models and thresholds.',
+  ]
+
+  return (
+    <div className="page-content project-detail-page">
+      <Link to="/projects" className="back-link"><ArrowLeft size={14} /> All project briefs</Link>
+      <PageIntro
+        eyebrow={`${project.level} PROJECT GUIDE`}
+        title={project.title}
+        description={project.goal}
+        action={<span className={`project-level-pill level-${project.level.toLowerCase()}`}>{project.level}</span>}
+      />
+      <div className="project-detail-meta">
+        <div><small>DATASET</small><b>{project.dataset}</b></div>
+        <div><small>PRIMARY METRICS</small><b>{project.metrics.join(' · ')}</b></div>
+        <div><small>SKILLS</small><b>{project.tags.join(' · ')}</b></div>
+      </div>
+      <div className="project-detail-layout">
+        <main>
+          <section className="project-detail-section">
+            <div className="eyebrow"><span />THE BRIEF</div>
+            <h2>What you are building</h2>
+            <p>{project.goal} Treat this as a complete portfolio case study: make the data decisions visible, establish a baseline, measure meaningful improvements, and explain where the system should not be trusted.</p>
+          </section>
+          <section className="project-detail-section">
+            <div className="eyebrow"><span />LEARNING OUTCOMES</div>
+            <h2>By the end, you can…</h2>
+            <ul className="project-detail-list">{learningOutcomes.map((item) => <li key={item}><CheckCircle2 size={16} />{item}</li>)}</ul>
+          </section>
+          <section className="project-detail-section">
+            <div className="eyebrow"><span />EXECUTION ROADMAP</div>
+            <h2>A practical build sequence</h2>
+            <ol className="project-roadmap-list">{project.steps.map((step, index) => <li key={step}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.split(':')[0]}</b><p>{step}</p></div></li>)}</ol>
+          </section>
+          <section className="project-detail-section">
+            <div className="eyebrow"><span />PORTFOLIO OUTPUT</div>
+            <h2>What to ship</h2>
+            <ul className="project-detail-list">{deliverables.map((item) => <li key={item}><ListChecks size={16} />{item}</li>)}</ul>
+          </section>
+        </main>
+        <aside className="project-detail-sidebar">
+          <div className="project-detail-card">
+            <small>SUCCESS CRITERIA</small>
+            <h3>Measure the right thing</h3>
+            <div className="detail-metric-list">{project.metrics.map((metric) => <span key={metric}>{metric}<Check size={13} /></span>)}</div>
+          </div>
+          <div className="project-detail-card">
+            <small>COMMON PITFALLS</small>
+            <h3>Protect the experiment</h3>
+            <ul>{pitfalls.map((item) => <li key={item}>{item}</li>)}</ul>
+          </div>
+          <div className="project-detail-card project-detail-challenge">
+            <small>STRETCH CHALLENGE</small>
+            <h3>Go one level deeper</h3>
+            <p>{project.challenge}</p>
+          </div>
+          <Link to="/curriculum" className="button button-dark project-detail-cta">Study the course <ArrowRight size={15} /></Link>
+        </aside>
       </div>
     </div>
   )
