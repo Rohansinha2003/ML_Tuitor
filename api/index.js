@@ -1490,7 +1490,11 @@ app.use(errorHandler);
 import mongoose2 from "mongoose";
 async function connectDatabase(uri) {
   mongoose2.set("strictQuery", true);
-  await mongoose2.connect(uri, { serverSelectionTimeoutMS: 1e4 });
+  mongoose2.set("bufferCommands", false);
+  await mongoose2.connect(uri, {
+    serverSelectionTimeoutMS: 8e3,
+    connectTimeoutMS: 8e3
+  });
 }
 
 // server/src/serverless.ts
@@ -1514,16 +1518,15 @@ async function ensureDatabase() {
   return connectionPromise;
 }
 async function handler(req, res) {
-  if (req.url?.startsWith("/api/health")) {
-    return app(req, res);
-  }
   try {
     await ensureDatabase();
   } catch (error) {
     console.error("MongoDB is unavailable for API request:", error instanceof Error ? error.message : String(error));
     res.statusCode = 503;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ error: "Database is unavailable. Check the server MONGODB_URI configuration." }));
+    res.end(JSON.stringify({
+      error: req.url?.startsWith("/api/health") ? "Database is unavailable. Check the MONGODB_URI value and MongoDB Atlas network access." : "Database is unavailable. Please try again later."
+    }));
     return;
   }
   return app(req, res);

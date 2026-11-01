@@ -27,16 +27,17 @@ async function ensureDatabase(): Promise<void> {
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  if (req.url?.startsWith('/api/health')) {
-    return app(req, res)
-  }
   try {
     await ensureDatabase()
   } catch (error) {
     console.error('MongoDB is unavailable for API request:', error instanceof Error ? error.message : String(error))
     res.statusCode = 503
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: 'Database is unavailable. Check the server MONGODB_URI configuration.' }))
+    res.end(JSON.stringify({
+      error: req.url?.startsWith('/api/health')
+        ? 'Database is unavailable. Check the MONGODB_URI value and MongoDB Atlas network access.'
+        : 'Database is unavailable. Please try again later.',
+    }))
     return
   }
   return app(req, res)
