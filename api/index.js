@@ -377,6 +377,34 @@ Built for curious minds.`;
   });
   await sendAccountEmail(to, subject, text, html);
 }
+async function sendPasswordResetEmail(to, token) {
+  const resetUrl = `${env.CLIENT_ORIGIN}/reset-password?token=${encodeURIComponent(token)}`;
+  const subject = "Reset your DeepNova password";
+  const text = `We received a request to reset your DeepNova password.
+
+Open this link within 30 minutes to choose a new password:
+${resetUrl}
+
+If you did not request this, you can safely ignore this email.
+
+\u2014
+DeepNova Studio`;
+  const html = baseEmailTemplate({
+    headline: "Reset your password.",
+    subhead: "We received a request to update your DeepNova account password.",
+    contentHtml: `
+      <p style="margin: 0 0 14px;">
+        Use the button below to choose a new password. This link is single-use and expires in 30 minutes.
+      </p>
+      <p style="margin: 0;">
+        If you did not request a password reset, you can safely ignore this email.
+      </p>
+    `,
+    buttonText: "Choose New Password",
+    buttonUrl: resetUrl
+  });
+  await sendAccountEmail(to, subject, text, html);
+}
 
 // server/src/routes/auth.ts
 var authRouter = Router();
@@ -557,19 +585,21 @@ authRouter.get("/me", authenticate, async (request, response) => {
 });
 authRouter.post("/forgot-password", resetLimiter, validateBody(forgotPasswordSchema), async (request, response) => {
   const { email: email2 } = request.body;
-  const user = env.emailConfigured ? await User.findOne({ email: email2 }).select("+resetTokenHash +resetExpiresAt") : null;
-  if (user && env.emailConfigured) {
+  if (!env.emailConfigured) throw new HttpError(503, "Password reset email is not configured on the server");
+  const user = await User.findOne({ email: email2 }).select("+resetTokenHash +resetExpiresAt");
+  if (user) {
     const token = createOpaqueToken();
     user.resetTokenHash = hashToken(token);
     user.resetExpiresAt = new Date(Date.now() + 30 * 60 * 1e3);
     await user.save();
     try {
-      await sendAccountEmail(email2, "Reset your DeepNova password", `Open this link within 30 minutes to reset your password: ${env.CLIENT_ORIGIN}/reset-password?token=${token}`);
+      await sendPasswordResetEmail(email2, token);
     } catch (error) {
       user.resetTokenHash = void 0;
       user.resetExpiresAt = void 0;
       await user.save();
       console.error("Password reset email delivery failed", error instanceof Error ? error.message : "Unknown error");
+      throw new HttpError(503, "Password reset email delivery is temporarily unavailable. Please try again later.");
     }
   }
   response.json({ data: { message: "If an account exists for that email, password reset instructions will be sent." } });

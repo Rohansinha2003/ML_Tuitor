@@ -42,9 +42,9 @@ describe('API security boundaries', () => {
     expect(response.body.details.length).toBeGreaterThan(0)
   })
 
-  it('returns the same generic forgot-password response without SMTP', async () => {
-    const response = await request(app).post('/api/auth/forgot-password').send({ email: 'unknown@example.com' }).expect(200)
-    expect(response.body.data.message).toBe('If an account exists for that email, password reset instructions will be sent.')
+  it('reports missing SMTP configuration for password reset', async () => {
+    const response = await request(app).post('/api/auth/forgot-password').send({ email: 'unknown@example.com' }).expect(503)
+    expect(response.body.error).toBe('Password reset email is not configured on the server')
   })
 
   it('rejects refresh-cookie operations without the configured origin', async () => {

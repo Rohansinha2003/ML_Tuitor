@@ -196,3 +196,33 @@ Built for curious minds.`
 
   await sendAccountEmail(to, subject, text, html)
 }
+
+export async function sendPasswordResetEmail(to: string, token: string) {
+  const resetUrl = `${env.CLIENT_ORIGIN}/reset-password?token=${encodeURIComponent(token)}`
+  const subject = 'Reset your DeepNova password'
+  const text = `We received a request to reset your DeepNova password.
+
+Open this link within 30 minutes to choose a new password:
+${resetUrl}
+
+If you did not request this, you can safely ignore this email.
+
+—
+DeepNova Studio`
+  const html = baseEmailTemplate({
+    headline: 'Reset your password.',
+    subhead: 'We received a request to update your DeepNova account password.',
+    contentHtml: `
+      <p style="margin: 0 0 14px;">
+        Use the button below to choose a new password. This link is single-use and expires in 30 minutes.
+      </p>
+      <p style="margin: 0;">
+        If you did not request a password reset, you can safely ignore this email.
+      </p>
+    `,
+    buttonText: 'Choose New Password',
+    buttonUrl: resetUrl,
+  })
+
+  await sendAccountEmail(to, subject, text, html)
+}

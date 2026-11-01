@@ -12,7 +12,7 @@ import { requireClientOrigin } from '../middleware/origin.js'
 import { validateBody } from '../middleware/validate.js'
 import { changePasswordSchema, forgotPasswordSchema, loginSchema, resetPasswordSchema, signupSchema, verifyEmailSchema } from '../validators/schemas.js'
 import { createAccessToken, createOpaqueToken, createRefreshToken, hashToken } from '../utils/tokens.js'
-import { sendAccountEmail, sendWelcomeEmail, sendWelcomeVerificationEmail } from '../utils/email.js'
+import { sendAccountEmail, sendPasswordResetEmail, sendWelcomeEmail, sendWelcomeVerificationEmail } from '../utils/email.js'
 
 export const authRouter = Router()
 const refreshCookieName = 'deepnova_refresh'
@@ -196,19 +196,21 @@ authRouter.get('/me', authenticate, async (request, response) => {
 
 authRouter.post('/forgot-password', resetLimiter, validateBody(forgotPasswordSchema), async (request, response) => {
   const { email } = request.body as { email: string }
-  const user = env.emailConfigured ? await User.findOne({ email }).select('+resetTokenHash +resetExpiresAt') : null
-  if (user && env.emailConfigured) {
+  if (!env.emailConfigured) throw new HttpError(503, 'Password reset email is not configured on the server')
+  const user = await User.findOne({ email }).select('+resetTokenHash +resetExpiresAt')
+  if (user) {
     const token = createOpaqueToken()
     user.resetTokenHash = hashToken(token)
     user.resetExpiresAt = new Date(Date.now() + 30 * 60 * 1000)
     await user.save()
     try {
-      await sendAccountEmail(email, 'Reset your DeepNova password', `Open this link within 30 minutes to reset your password: ${env.CLIENT_ORIGIN}/reset-password?token=${token}`)
+      await sendPasswordResetEmail(email, token)
     } catch (error) {
       user.resetTokenHash = undefined
       user.resetExpiresAt = undefined
       await user.save()
       console.error('Password reset email delivery failed', error instanceof Error ? error.message : 'Unknown error')
+      throw new HttpError(503, 'Password reset email delivery is temporarily unavailable. Please try again later.')
     }
   }
   response.json({ data: { message: 'If an account exists for that email, password reset instructions will be sent.' } })
