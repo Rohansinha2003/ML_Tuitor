@@ -208,6 +208,10 @@ var transporter = env.emailConfigured ? nodemailer.createTransport({
   host: env.SMTP_HOST,
   port: env.SMTP_PORT,
   secure: env.SMTP_PORT === 465,
+  requireTLS: env.SMTP_PORT !== 465,
+  connectionTimeout: 8e3,
+  greetingTimeout: 8e3,
+  socketTimeout: 8e3,
   auth: { user: env.SMTP_USER, pass: env.SMTP_PASSWORD }
 }) : null;
 async function sendAccountEmail(to, subject, text, html) {
