@@ -1,5 +1,3 @@
-server/
 *.md
 .env*
 !**/.env.example
-
