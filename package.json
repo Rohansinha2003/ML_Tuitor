@@ -18,6 +18,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "@vercel/speed-insights": "^2.0.0",
     "katex": "^0.19.0",
     "lucide-react": "^1.59.0",
