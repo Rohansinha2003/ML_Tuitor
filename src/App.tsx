@@ -1,14 +1,31 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, BookOpen, Command, Compass, FlaskConical, GraduationCap, Layers3, Menu, Moon, Search, Sun, X, Code2, Sparkles } from 'lucide-react'
 import { lessons, lessonSearchText } from './content/lessons'
-import { LearningProvider } from './state'
+import { LearningProvider, useLearning } from './state'
 import { AuthProvider } from './AuthProvider'
-import { Dashboard, Curriculum, LessonPage, SearchPage, ProjectsPage, ProjectDetailPage, InterviewPage, RevisionPage, NotFoundPage } from './pages'
-import { PlaygroundLab } from './PlaygroundLab'
-import { ForgotPasswordPage, LoginPage, ProfilePage, ProtectedRoute, ResetPasswordPage, SignupPage, VerifyEmailPage } from './AuthPages'
 import { LandingPage } from './LandingPage'
 import { useAuth } from './AuthProvider'
+
+const loadPages = () => import('./pages')
+const loadAuthPages = () => import('./AuthPages')
+const Dashboard = lazy(() => loadPages().then((page) => ({ default: page.Dashboard })))
+const Curriculum = lazy(() => loadPages().then((page) => ({ default: page.Curriculum })))
+const LessonPage = lazy(() => loadPages().then((page) => ({ default: page.LessonPage })))
+const SearchPage = lazy(() => loadPages().then((page) => ({ default: page.SearchPage })))
+const ProjectsPage = lazy(() => loadPages().then((page) => ({ default: page.ProjectsPage })))
+const ProjectDetailPage = lazy(() => loadPages().then((page) => ({ default: page.ProjectDetailPage })))
+const InterviewPage = lazy(() => loadPages().then((page) => ({ default: page.InterviewPage })))
+const RevisionPage = lazy(() => loadPages().then((page) => ({ default: page.RevisionPage })))
+const NotFoundPage = lazy(() => loadPages().then((page) => ({ default: () => <page.NotFoundPage /> })))
+const PlaygroundLab = lazy(() => import('./PlaygroundLab').then((page) => ({ default: page.PlaygroundLab })))
+const LoginPage = lazy(() => loadAuthPages().then((page) => ({ default: page.LoginPage })))
+const SignupPage = lazy(() => loadAuthPages().then((page) => ({ default: page.SignupPage })))
+const ForgotPasswordPage = lazy(() => loadAuthPages().then((page) => ({ default: page.ForgotPasswordPage })))
+const ResetPasswordPage = lazy(() => loadAuthPages().then((page) => ({ default: page.ResetPasswordPage })))
+const VerifyEmailPage = lazy(() => loadAuthPages().then((page) => ({ default: page.VerifyEmailPage })))
+const ProfilePage = lazy(() => loadAuthPages().then((page) => ({ default: page.ProfilePage })))
+const ProtectedRoute = lazy(() => loadAuthPages().then((page) => ({ default: page.ProtectedRoute })))
 
 function App() {
   return <AuthProvider><LearningProvider><BrowserRouter><AppFrame /></BrowserRouter></LearningProvider></AuthProvider>
@@ -19,6 +36,7 @@ function AppFrame() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const auth = useAuth()
+  const learning = useLearning()
   const location = useLocation()
   const navigate = useNavigate()
   useEffect(() => {
@@ -54,15 +72,16 @@ function AppFrame() {
         <SidebarLink to="/revision" icon={<Sparkles size={17} />} label="Revision" />
       </nav>
       <div className="nav-label course-label">YOUR COURSE <Link to="/curriculum" aria-label="Browse all courses"><ArrowRight size={13} /></Link></div>
-      <div className="course-links">{lessons.slice(0, 4).map((lesson, index) => <Link to={`/lesson/${lesson.slug}`} className="course-link" key={lesson.slug}><span className={`course-dot dot-${index + 1}`} />{lesson.title}<span className="course-count">{lesson.number}</span></Link>)}</div>
+      <div className="course-links">{lessons.slice(0, 4).map((lesson, index) => <Link to={`/lesson/${lesson.slug}`} className="course-link" key={lesson.slug}><span className={`course-dot dot-${index + 1}`} /><span className="course-title">{lesson.title}</span><span className="course-count">{lesson.number}</span></Link>)}</div>
       <div className="sidebar-spacer" />
       <div className="sidebar-footnote"><span>✳</span> Built for curious minds.</div>
-      <div className="sidebar-profile"><Link to={auth.user ? '/profile' : '/login'} className="sidebar-profile-link"><span className="profile-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span><span><b>{auth.user?.name ?? 'Guest learner'}</b><small>{auth.status === 'loading' ? 'Restoring session…' : auth.user ? 'Synced account' : 'Local progress'}</small></span></Link><button aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button></div>
+      <div className="sidebar-profile"><Link to={auth.user ? '/profile' : '/login'} className="sidebar-profile-link"><span className="profile-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span><span><b>{auth.user?.name ?? 'Guest learner'}</b><small>{auth.status === 'loading' ? 'Restoring session…' : auth.user ? (learning.syncStatus === 'error' ? 'Sync problem' : 'Synced account') : 'Local progress'}</small></span></Link><button aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button></div>
     </aside>
     {menuOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
     <main className="main-shell">
       <header className="topbar"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>DEEPNOVA</span><span>/</span><b>LEARNING STUDIO</b></div><button className="global-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search lessons, ideas...</span><kbd><Command size={11} /> K</kbd></button><button className="top-theme icon-button" aria-label="Toggle color theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>{auth.status === 'authenticated' ? <Link to="/profile" className="auth-nav-link">{auth.user?.name.split(' ')[0]}</Link> : auth.status === 'guest' ? <Link to="/login" className="auth-nav-link">Sign in</Link> : <span className="auth-status" role="status">Checking session</span>}<span className="top-avatar">{auth.user ? auth.user.name.slice(0, 1).toUpperCase() : 'L'}</span></header>
-      <Routes><Route path="/overview" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/projects/:slug" element={<ProjectDetailPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="/login" element={<LoginPage />} /><Route path="/signup" element={<SignupPage />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="/verify-email" element={<VerifyEmailPage />} /><Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} /><Route path="*" element={<NotFoundPage />} /></Routes>
+      {learning.error && <div className="sync-notice" role="alert"><span>{learning.error}</span><button type="button" aria-label="Dismiss message" onClick={learning.clearError}><X size={14} /></button></div>}
+      <Suspense fallback={<div className="page-content auth-loading" role="status">Loading…</div>}><Routes><Route path="/overview" element={<Dashboard />} /><Route path="/curriculum" element={<Curriculum />} /><Route path="/lesson/:slug" element={<LessonPage />} /><Route path="/playground" element={<PlaygroundLab />} /><Route path="/search" element={<SearchPage />} /><Route path="/projects" element={<ProjectsPage />} /><Route path="/projects/:slug" element={<ProjectDetailPage />} /><Route path="/interviews" element={<InterviewPage />} /><Route path="/revision" element={<RevisionPage />} /><Route path="/login" element={<LoginPage />} /><Route path="/signup" element={<SignupPage />} /><Route path="/forgot-password" element={<ForgotPasswordPage />} /><Route path="/reset-password" element={<ResetPasswordPage />} /><Route path="/verify-email" element={<VerifyEmailPage />} /><Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} /><Route path="*" element={<NotFoundPage />} /></Routes></Suspense>
       <footer className="app-footer"><span>DEEPNOVA <i>·</i> Learn by understanding</span><span>Made for the long way in.</span></footer>
     </main>
     {searchOpen && <CommandSearch close={() => setSearchOpen(false)} openLesson={openLesson} />}

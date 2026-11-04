@@ -422,7 +422,7 @@ kbd { border: 1px solid var(--line); border-radius: 3px; color: var(--muted); fo
 .auth-divider::before, .auth-divider::after { content: ''; height: 1px; flex: 1; background: var(--line); }
 .google-auth-button { min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; cursor: pointer; }
 .google-auth-button:hover { border-color: var(--green); background: var(--surface-soft); }
-.google-mark { width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid #4285f4; border-radius: 50%; color: #4285f4; font: 600 12px Arial, sans-serif; }
+.google-mark { width: 17px; height: 17px; flex: 0 0 auto; }
 .auth-provider-note { margin: -5px 0 0; color: var(--faint); text-align: center; font-size: 8px; line-height: 1.5; }
 .auth-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 9px; }
 .auth-links a { color: var(--green); }.auth-links > a { display: inline-flex; align-items: center; gap: 4px; }
@@ -1562,3 +1562,45 @@ kbd { border: 1px solid var(--line); border-radius: 3px; color: var(--muted); fo
 }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* Sync problems, lesson mistakes, reading lists */
+.sync-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 24px 0; padding: 9px 12px; border-radius: 4px; color: #9e3c2c; background: var(--orange-pale); font-size: 11px; line-height: 1.5; }
+.sync-notice button { display: grid; place-items: center; color: inherit; }
+.auth-inline-action { justify-self: start; color: var(--green); font-size: 10px; text-decoration: underline; }
+.auth-provider-note a { color: var(--green); text-decoration: underline; }
+.quiz-history { margin: 10px 0 0; color: var(--muted); font: 9px 'DM Mono', monospace; }
+.mistakes-section { margin: 22px 0; }
+.mistakes-section ul { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.mistakes-section li { padding: 11px 13px; border: 1px solid var(--line); border-left: 2px solid var(--orange); border-radius: 4px; background: var(--surface); }
+.mistakes-section b { display: block; color: var(--ink); font-size: 11px; font-weight: 600; line-height: 1.5; }
+.mistakes-section p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.further-reading { margin: 22px 0; }
+.further-reading h2 { margin: 6px 0 10px; font: 500 17px 'Fraunces', serif; }
+.further-reading ul { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.further-reading a { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: 11px; font-weight: 500; }
+.further-reading a:hover { color: var(--orange); }
+.further-reading p { margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
+
+/* Readable lesson copy: long-form text needs real reading sizes, whatever the surrounding chrome uses */
+.inline-code { padding: 1px 4px; border-radius: 3px; background: var(--surface-soft); color: var(--green-dark); font: .92em 'DM Mono', monospace; overflow-wrap: anywhere; }
+.code-window .inline-code { background: transparent; }
+.course-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.practice-prompt { flex: 1; min-width: 0; color: var(--ink) !important; font: inherit !important; }
+.lesson-deck { font-size: 16px; }
+.lesson-note b { font-size: 16px; }
+.lesson-note p, .lesson-objectives li, .lesson-prose > p, .section-points li, .worked-example p, .takeaways li,
+.code-walkthrough p, .practice-item > div, .quiz-feedback p, .mini-project > div:first-child > p, .mini-project ol,
+.mistakes-section p, .further-reading p, .interview-card details p, .interview-answer p { font-size: 14.5px; line-height: 1.75; }
+.lesson-formula p { font-size: 13.5px; line-height: 1.7; }
+.prerequisite-list a, .mini-project-extension, .further-reading a { font-size: 13.5px; line-height: 1.6; }
+.practice-item summary, .quiz-option, .mistakes-section b, .interview-card h3 { font-size: 14px; line-height: 1.5; }
+.quiz-feedback b { font-size: 13px; }
+.code-window pre { font-size: 12.5px; }
+.code-output pre { font-size: 12px; }
+.code-output b, .code-walkthrough b, .worked-example > span, .practice-item > div b, .mini-project-extension b, .lesson-objectives > div > span, .lesson-formula > span, .lesson-notes label { font-size: 10px; }
+.lesson-notes textarea { font-size: 14px; line-height: 1.6; }
+.rail-lesson, .lesson-toc button { font-size: 11px; }
+@media (max-width: 600px) {
+  .lesson-prose > p { margin-left: 0; }
+  .code-walkthrough { flex-direction: column; gap: 5px; }
+}

@@ -9,11 +9,12 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "npm --prefix server run dev",
-    "build": "tsc -b && vite build && npm run build:server && npm run build:api",
+    "build": "tsc -b && npm --prefix server run typecheck && vite build && npm run build:server && npm run build:api",
     "build:server": "npm --prefix server run build",
     "build:api": "esbuild server/src/serverless.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.js",
     "lint": "eslint .",
     "test:server": "npm --prefix server test",
+    "check:env": "npm --prefix server run check:env",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -32,7 +33,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.7",

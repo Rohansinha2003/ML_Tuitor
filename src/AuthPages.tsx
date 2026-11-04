@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, CheckCircle2, LoaderCircle } from 'lucide-react'
-import { apiUrl, ApiError } from './api'
+import { ApiError } from './api'
+import { GoogleButton } from './GoogleButton'
 import { PageIntro } from './pages'
 import { useAuth } from './AuthProvider'
 
@@ -18,8 +19,13 @@ function SubmitButton({ busy, children }: { busy: boolean; children: ReactNode }
   return <button className="button button-dark auth-submit" type="submit" disabled={busy}>{busy && <LoaderCircle size={15} className="auth-spinner" />}{children}</button>
 }
 
-function GoogleButton({ returnTo }: { returnTo: string }) {
-  return <button className="google-auth-button" type="button" onClick={() => window.location.assign(`${apiUrl('/auth/google')}?returnTo=${encodeURIComponent(returnTo)}`)}><span className="google-mark">G</span>Continue with Google</button>
+const googleErrors: Record<string, string> = {
+  google_denied: 'Google sign-in was cancelled. You can try again whenever you like.',
+  google_state: 'That Google sign-in link expired. Please start again from this page.',
+  google_conflict: 'This email is already linked to a different Google account.',
+  google_unverified: 'Google did not confirm that this email address is verified.',
+  google_unavailable: 'Google sign-in is not available right now. Please use your email and password.',
+  google_failed: 'Google sign-in could not be completed. Please try again.',
 }
 
 function errorMessage(error: unknown) {
@@ -28,21 +34,33 @@ function errorMessage(error: unknown) {
 }
 
 export function LoginPage() {
-  const { status, login } = useAuth()
+  const { status, login, resendVerification } = useAuth()
   const [search] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+  const [error, setError] = useState(() => googleErrors[search.get('error') ?? ''] ?? '')
   const [busy, setBusy] = useState(false)
-  const destination = search.get('returnTo') ?? (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/overview'
-  if (status === 'authenticated') return <Navigate to={destination.startsWith('/') ? destination : '/overview'} replace />
+  const [needsVerification, setNeedsVerification] = useState(false)
+  const [notice, setNotice] = useState('')
+  const requested = search.get('returnTo') ?? (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? '/overview'
+  const destination = requested.startsWith('/') && !requested.startsWith('//') ? requested : '/overview'
+  if (status === 'authenticated') return <Navigate to={destination} replace />
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true)
     setError('')
-    try { await login(email, password); navigate(destination.startsWith('/') ? destination : '/overview', { replace: true }) }
+    setNotice('')
+    setNeedsVerification(false)
+    try { await login(email, password); navigate(destination, { replace: true }) }
+    catch (reason) { setError(errorMessage(reason)); setNeedsVerification(reason instanceof ApiError && reason.status === 403) }
+    finally { setBusy(false) }
+  }
+  const resend = async () => {
+    setBusy(true)
+    setError('')
+    try { setNotice(await resendVerification(email)); setNeedsVerification(false) }
     catch (reason) { setError(errorMessage(reason)) }
     finally { setBusy(false) }
   }
@@ -51,10 +69,11 @@ export function LoginPage() {
       <label>Email<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
       <FormMessage message={error} />
+      <FormMessage message={notice} success />
+      {needsVerification && <button type="button" className="auth-inline-action" disabled={busy} onClick={() => void resend()}>Send a new verification link</button>}
       <SubmitButton busy={busy}>Sign in <ArrowRight size={15} /></SubmitButton>
       <div className="auth-divider"><span>or</span></div>
-      <GoogleButton returnTo={`${location.pathname}${location.search}`} />
-      <p className="auth-provider-note">Continue with Google uses the configured OAuth server.</p>
+      <GoogleButton returnTo={destination} />
       <div className="auth-links"><Link to="/forgot-password">Forgot password?</Link><span>New here? <Link to="/signup">Create an account</Link></span></div>
     </form>
   </AuthShell>
@@ -63,7 +82,6 @@ export function LoginPage() {
 export function SignupPage() {
   const { status, signup } = useAuth()
   const navigate = useNavigate()
-  const location = useLocation()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -95,8 +113,7 @@ export function SignupPage() {
       <FormMessage message={message} success={success} />
       <SubmitButton busy={busy}>Create account <ArrowRight size={15} /></SubmitButton>
       <div className="auth-divider"><span>or</span></div>
-      <GoogleButton returnTo={`${location.pathname}${location.search}`} />
-      <p className="auth-provider-note">Continue with Google uses the configured OAuth server.</p>
+      <GoogleButton returnTo="/overview" />
       <div className="auth-links"><span>Already registered? <Link to="/login">Sign in</Link></span></div>
     </form>
   </AuthShell>
@@ -148,14 +165,15 @@ export function VerifyEmailPage() {
   const { verifyEmail } = useAuth()
   const [search] = useSearchParams()
   const token = search.get('token') ?? ''
-  const [message, setMessage] = useState('Verifying your email…')
-  const [error, setError] = useState(false)
+  const [message, setMessage] = useState(token ? 'Verifying your email…' : 'This verification link is incomplete. Open the full link from your email.')
+  const [error, setError] = useState(!token)
   useEffect(() => {
     let active = true
+    if (!token) return
     void verifyEmail(token).then(() => { if (active) setMessage('Email verified. You can now sign in.') }).catch((reason) => { if (active) { setError(true); setMessage(errorMessage(reason)) } })
     return () => { active = false }
   }, [token, verifyEmail])
-  return <AuthShell eyebrow="EMAIL VERIFICATION" title="Confirm your email." description="Verification links are single-use and expire after 24 hours."><div className="auth-complete"><CheckCircle2 size={22} /><FormMessage message={message} success={!error} />{!error && <Link to="/login" className="button button-dark">Go to sign in <ArrowRight size={15} /></Link>}</div></AuthShell>
+  return <AuthShell eyebrow="EMAIL VERIFICATION" title="Confirm your email." description="Verification links are single-use and expire after 24 hours."><div className="auth-complete">{!error && <CheckCircle2 size={22} />}<FormMessage message={message} success={!error} />{!error && <Link to="/login" className="button button-dark">Go to sign in <ArrowRight size={15} /></Link>}</div></AuthShell>
 }
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -181,5 +199,5 @@ export function ProfilePage() {
     finally { setBusy(false) }
   }
   if (!user) return null
-  return <div className="page-content"><PageIntro eyebrow="YOUR ACCOUNT" title="Profile and security." description="Your account details and password controls." /><section className="auth-panel profile-panel"><dl><div><dt>Name</dt><dd>{user.name}</dd></div><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Email status</dt><dd>{user.emailVerified ? 'Verified' : 'Not verified'}</dd></div><div><dt>Member since</dt><dd>{new Date(user.createdAt).toLocaleDateString()}</dd></div></dl><form className="auth-form" onSubmit={submit}><h2>Change password</h2><label>Current password<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>New password<input type="password" autoComplete="new-password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>Confirm new password<input type="password" autoComplete="new-password" minLength={12} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><FormMessage message={error} /><FormMessage message={message} success /><SubmitButton busy={busy}>Change password</SubmitButton></form><button className="profile-logout" type="button" onClick={() => void logout()}>Sign out</button></section></div>
+  return <div className="page-content"><PageIntro eyebrow="YOUR ACCOUNT" title="Profile and security." description="Your account details and password controls." /><section className="auth-panel profile-panel"><dl><div><dt>Name</dt><dd>{user.name}</dd></div><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Email status</dt><dd>{user.emailVerified ? 'Verified' : 'Not verified'}</dd></div><div><dt>Sign-in</dt><dd>{user.hasPassword ? 'Email and password' : 'Google'}</dd></div><div><dt>Member since</dt><dd>{new Date(user.createdAt).toLocaleDateString()}</dd></div></dl>{user.hasPassword ? <form className="auth-form" onSubmit={submit}><h2>Change password</h2><label>Current password<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>New password<input type="password" autoComplete="new-password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>Confirm new password<input type="password" autoComplete="new-password" minLength={12} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><FormMessage message={error} /><FormMessage message={message} success /><SubmitButton busy={busy}>Change password</SubmitButton></form> : <p className="auth-provider-note">You sign in with Google, so there is no password to change. To add one, use <Link to="/forgot-password">password reset</Link> with this email.</p>}<button className="profile-logout" type="button" onClick={() => void logout()}>Sign out</button></section></div>
 }

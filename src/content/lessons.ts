@@ -1,4 +1,6 @@
+import { languageLessons, productionLessons, supervisedLessons, visionLessons } from './appliedLessons'
 import { deepLearningLessons } from './deepLearningLessons'
+import { lessonExtras, type LessonExtras } from './lessonExtras'
 
 export type LessonSection = {
   title: string
@@ -9,8 +11,8 @@ export type LessonSection = {
   example?: string
 }
 
-export type Lesson = {
-  number: string
+export type LessonDraft = {
+  number?: string
   slug: string
   title: string
   description: string
@@ -35,7 +37,9 @@ export type Lesson = {
   miniProject?: { title: string; objective: string; tasks: string[]; extension: string }
 }
 
-export const lessons: Lesson[] = [
+export type Lesson = LessonDraft & LessonExtras & { number: string }
+
+const lessonDrafts: LessonDraft[] = [
   {
     number: '01', slug: 'what-is-machine-learning', title: 'What is machine learning?',
     description: 'A machine learns patterns from examples, then uses those patterns to make a useful guess about something it has not seen before.',
@@ -212,6 +216,7 @@ export const lessons: Lesson[] = [
     ],
     formula: '\\text{precision}=\\frac{TP}{TP+FP} \\qquad \\text{recall}=\\frac{TP}{TP+FN} \\qquad \\text{specificity}=\\frac{TN}{TN+FP}', formulaExplanation: 'TP and TN are correct positive and negative decisions; FP and FN are false alarms and missed positives. The denominator changes the question each metric answers.',
     code: 'from sklearn.metrics import (\n    confusion_matrix, precision_score, recall_score, f1_score\n)\n\nactual = [1, 1, 0, 0, 0, 0]\npredicted = [1, 0, 0, 0, 1, 0]\n\nprint(confusion_matrix(actual, predicted))\nprint("precision:", precision_score(actual, predicted))\nprint("recall:", recall_score(actual, predicted))\nprint("F1:", f1_score(actual, predicted))',
+    codeOutput: '[[3 1]\n [1 1]]\nprecision: 0.5\nrecall: 0.5\nF1: 0.5',
     codeExplanation: 'The positive class is `1`. The model found one of two positives (recall 0.5) and one of its two positive predictions was correct (precision 0.5). Always confirm which class is treated as positive.',
     practice: [
       { prompt: 'Using TP=8, FN=2, FP=30, TN=960, calculate accuracy, precision, recall, and specificity.', answer: 'Accuracy 0.968, precision ≈0.211, recall 0.8, specificity ≈0.970.', solution: 'Accuracy=(8+960)/1000=0.968. Precision=8/(8+30)=8/38≈0.211. Recall=8/(8+2)=0.8. Specificity=960/(960+30)=960/990≈0.970.' },
@@ -253,6 +258,10 @@ export const lessons: Lesson[] = [
     miniProject: { title: 'Train a tiny XOR network', objective: 'Build intuition for why hidden nonlinear layers matter by fitting the four-row XOR dataset.', tasks: ['Print the XOR features and targets.', 'Train the provided network and record loss every 100 epochs.', 'Inspect predictions before and after training.', 'Remove the hidden layer and explain why a single linear output cannot fit XOR.'], extension: 'Change hidden width from 2 to 8 and compare learning speed and final predictions across several seeds.' },
   },
   ...deepLearningLessons,
+  ...supervisedLessons,
+  ...visionLessons,
+  ...languageLessons,
+  ...productionLessons,
 ]
 
 export type CourseModule = {
@@ -288,17 +297,29 @@ export function lessonSearchText(lesson: Lesson) {
     ...lesson.takeaways,
     lesson.interview.question,
     lesson.interview.answer,
+    ...lesson.commonMistakes.flatMap((item) => [item.mistake, item.fix]),
     ...(lesson.miniProject ? [lesson.miniProject.title, lesson.miniProject.objective, ...lesson.miniProject.tasks, lesson.miniProject.extension] : []),
   ].join(' ').toLowerCase()
 }
 
-export const modules: CourseModule[] = [
-  { id: 'foundations', number: '01', shortTitle: 'ML foundations', title: 'Start with the shape of the problem', level: 'Beginner', estimatedHours: '2–3 hours', lessonCount: 3, lessonSlugs: ['what-is-machine-learning', 'supervised-vs-unsupervised', 'train-validation-test'], description: 'Get clear on what a model learns, what its data says, and how to tell whether a result means anything.', outcomes: ['Inputs & targets', 'Learning setups', 'Data splits'] },
-  { id: 'supervised', number: '02', shortTitle: 'Supervised learning', title: 'Make a prediction you can explain', level: 'Beginner', estimatedHours: '3–4 hours', lessonCount: 1, lessonSlugs: ['linear-regression'], description: 'Build a first predictive model and understand the assumptions hiding inside its simplicity.', outcomes: ['Regression', 'Model assumptions', 'Residuals'] },
-  { id: 'optimization', number: '03', shortTitle: 'Optimization', title: 'How a model learns its parameters', level: 'Beginner', estimatedHours: '3–5 hours', lessonCount: 1, lessonSlugs: ['gradient-descent'], description: 'Use derivatives and loss to understand the repeated updates behind model training.', outcomes: ['Loss functions', 'Gradients', 'Learning rate'] },
-  { id: 'model-quality', number: '04', shortTitle: 'Model quality', title: 'Trust the evidence, not the headline score', level: 'Beginner', estimatedHours: '3–4 hours', lessonCount: 2, lessonSlugs: ['overfitting-underfitting', 'evaluation-metrics'], description: 'Diagnose model fit and choose evaluation measures that match the real cost of mistakes.', outcomes: ['Generalization', 'Classification metrics', 'Error costs'] },
-  { id: 'deep-learning', number: '05', shortTitle: 'Deep learning', title: 'From perceptrons to transformers', level: 'Beginner', estimatedHours: '15–20 hours', lessonCount: 10, lessonSlugs: ['neural-networks', 'perceptrons', 'activation-functions-and-losses', 'forward-propagation', 'backpropagation', 'optimizers', 'convolutional-neural-networks', 'recurrent-neural-networks', 'attention-mechanism', 'transformers'], description: 'Build from a single artificial neuron through training, convolution, recurrent models, attention, and transformer language models.', outcomes: ['Neurons & activations', 'Forward/backward passes', 'CNNs & RNNs', 'Attention & transformers'] },
-  { id: 'computer-vision', number: '06', shortTitle: 'Computer vision', title: 'Teach a model to see patterns', level: 'Intermediate', estimatedHours: '6–8 hours', lessonCount: 8, lessonSlugs: [], description: 'Move from pixels and convolution to image classification, detection, and segmentation.', outcomes: ['Image tensors', 'Convolutions', 'Transfer learning'] },
-  { id: 'language-models', number: '07', shortTitle: 'Language & LLMs', title: 'From tokens to useful language tools', level: 'Intermediate', estimatedHours: '8–10 hours', lessonCount: 12, lessonSlugs: [], description: 'Understand text representations, attention, transformer architectures, and retrieval-augmented generation.', outcomes: ['Tokenization', 'Attention', 'RAG'] },
-  { id: 'production', number: '08', shortTitle: 'Production AI', title: 'Bring models into the real world', level: 'Advanced', estimatedHours: '8–12 hours', lessonCount: 9, lessonSlugs: [], description: 'Explore deployment, evaluation, monitoring, and the operational choices that keep ML systems reliable.', outcomes: ['Serving', 'Monitoring', 'Responsible AI'] },
+type ModuleDraft = Omit<CourseModule, 'lessonCount'>
+
+const moduleDrafts: ModuleDraft[] = [
+  { id: 'foundations', number: '01', shortTitle: 'ML foundations', title: 'Start with the shape of the problem', level: 'Beginner', estimatedHours: '2–3 hours', lessonSlugs: ['what-is-machine-learning', 'supervised-vs-unsupervised', 'train-validation-test'], description: 'Get clear on what a model learns, what its data says, and how to tell whether a result means anything.', outcomes: ['Inputs & targets', 'Learning setups', 'Data splits'] },
+  { id: 'supervised', number: '02', shortTitle: 'Supervised learning', title: 'Make a prediction you can explain', level: 'Beginner', estimatedHours: '4–6 hours', lessonSlugs: ['linear-regression', 'logistic-regression', 'decision-trees-and-ensembles', 'feature-engineering-and-pipelines'], description: 'Build predictive models for numbers and categories, combine trees into ensembles, and prepare messy data without leaking it.', outcomes: ['Regression & classification', 'Trees & ensembles', 'Leak-proof pipelines'] },
+  { id: 'optimization', number: '03', shortTitle: 'Optimization', title: 'How a model learns its parameters', level: 'Beginner', estimatedHours: '1–2 hours', lessonSlugs: ['gradient-descent'], description: 'Use derivatives and loss to understand the repeated updates behind model training.', outcomes: ['Loss functions', 'Gradients', 'Learning rate'] },
+  { id: 'model-quality', number: '04', shortTitle: 'Model quality', title: 'Trust the evidence, not the headline score', level: 'Beginner', estimatedHours: '2–3 hours', lessonSlugs: ['overfitting-underfitting', 'evaluation-metrics'], description: 'Diagnose model fit and choose evaluation measures that match the real cost of mistakes.', outcomes: ['Generalization', 'Classification metrics', 'Error costs'] },
+  { id: 'deep-learning', number: '05', shortTitle: 'Deep learning', title: 'From perceptrons to transformers', level: 'Intermediate', estimatedHours: '15–20 hours', lessonSlugs: ['neural-networks', 'perceptrons', 'activation-functions-and-losses', 'forward-propagation', 'backpropagation', 'optimizers', 'convolutional-neural-networks', 'recurrent-neural-networks', 'attention-mechanism', 'transformers'], description: 'Build from a single artificial neuron through training, convolution, recurrent models, attention, and transformer language models.', outcomes: ['Neurons & activations', 'Forward/backward passes', 'CNNs & RNNs', 'Attention & transformers'] },
+  { id: 'computer-vision', number: '06', shortTitle: 'Computer vision', title: 'Teach a model to see patterns', level: 'Intermediate', estimatedHours: '4–6 hours', lessonSlugs: ['image-data-and-augmentation', 'transfer-learning', 'object-detection-and-segmentation'], description: 'Prepare image data, adapt pretrained models to small datasets, and locate objects with detection and segmentation.', outcomes: ['Image tensors', 'Transfer learning', 'Detection & segmentation'] },
+  { id: 'language-models', number: '07', shortTitle: 'Language & LLMs', title: 'From tokens to useful language tools', level: 'Intermediate', estimatedHours: '5–7 hours', lessonSlugs: ['tokenization-and-embeddings', 'how-llms-generate-text', 'retrieval-augmented-generation'], description: 'Understand text representations and how language models generate, then ground their answers with retrieval.', outcomes: ['Tokens & embeddings', 'Sampling', 'RAG'] },
+  { id: 'production', number: '08', shortTitle: 'Production AI', title: 'Bring models into the real world', level: 'Advanced', estimatedHours: '5–7 hours', lessonSlugs: ['serving-models', 'monitoring-and-drift', 'responsible-ai'], description: 'Deploy models safely, catch silent failures with monitoring, and audit outcomes for the people they affect.', outcomes: ['Serving', 'Monitoring', 'Responsible AI'] },
 ]
+
+export const modules: CourseModule[] = moduleDrafts.map((module) => ({ ...module, lessonCount: module.lessonSlugs.length }))
+
+/** Published lessons in learning order. Numbers follow the curriculum, so previous and next match it. */
+export const lessons: Lesson[] = modules.flatMap((module) => module.lessonSlugs).map((slug, index) => {
+  const draft = lessonDrafts.find((item) => item.slug === slug)
+  if (!draft) throw new Error(`Module references a missing lesson: ${slug}`)
+  return { ...draft, ...lessonExtras[slug], number: String(index + 1).padStart(2, '0') }
+})

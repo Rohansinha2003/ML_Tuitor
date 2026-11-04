@@ -7,6 +7,7 @@ export type SafeUser = {
   email: string
   avatarUrl: string | null
   emailVerified: boolean
+  hasPassword: boolean
   createdAt: string
 }
 
@@ -22,6 +23,7 @@ type AuthContextValue = AuthState & {
   forgotPassword: (email: string) => Promise<string>
   resetPassword: (token: string, password: string, confirmPassword: string) => Promise<void>
   verifyEmail: (token: string) => Promise<void>
+  resendVerification: (email: string) => Promise<string>
   changePassword: (currentPassword: string, password: string, confirmPassword: string) => Promise<void>
 }
 
@@ -88,13 +90,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await apiRequest('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }, false)
   }, [])
 
+  const resendVerification = useCallback(async (email: string) => {
+    const result = await apiRequest<{ message: string }>('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }, false)
+    return result.message
+  }, [])
+
   const changePassword = useCallback(async (currentPassword: string, password: string, confirmPassword: string) => {
     await apiRequest('/auth/change-password', { method: 'PATCH', body: JSON.stringify({ currentPassword, password, confirmPassword }) })
     setAccessToken(null)
     setState({ status: 'guest', user: null })
   }, [])
 
-  return <AuthContext.Provider value={{ ...state, login, signup, logout, forgotPassword, resetPassword, verifyEmail, changePassword }}>{children}</AuthContext.Provider>
+  return <AuthContext.Provider value={{ ...state, login, signup, logout, forgotPassword, resetPassword, verifyEmail, resendVerification, changePassword }}>{children}</AuthContext.Provider>
 }
 
 export function useAuth() {

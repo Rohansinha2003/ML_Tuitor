@@ -19,7 +19,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/state.tsx'],
+    files: ['src/state.tsx', 'src/AuthProvider.tsx'],
     rules: { 'react-refresh/only-export-components': 'off' },
   },
 )

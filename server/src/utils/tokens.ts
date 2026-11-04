@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { env } from '../config/env.js'
 
@@ -10,5 +10,5 @@ export function createAccessToken(userId: string, sessionId: string) {
 }
 
 export function createRefreshToken(userId: string, sessionId: string) {
-  return jwt.sign({ type: 'refresh', sid: sessionId }, env.JWT_REFRESH_SECRET, { subject: userId, expiresIn: '30d' })
+  return jwt.sign({ type: 'refresh', sid: sessionId }, env.JWT_REFRESH_SECRET, { subject: userId, expiresIn: '30d', jwtid: randomUUID() })
 }

@@ -1,6 +1,6 @@
-import type { Lesson } from './lessons'
+import type { LessonDraft } from './lessons'
 
-export const deepLearningLessons: Lesson[] = [
+export const deepLearningLessons: LessonDraft[] = [
   {
     number: '09', slug: 'perceptrons', title: 'The perceptron: a neuron that makes a choice',
     description: 'Start with the smallest neural unit: weighted evidence, a bias, and a threshold that turns a score into a class.',
@@ -47,7 +47,8 @@ export const deepLearningLessons: Lesson[] = [
     ],
     formula: '\\operatorname{ReLU}(z)=\\max(0,z) \\qquad \\operatorname{softmax}(z_i)=\\frac{e^{z_i}}{\\sum_j e^{z_j}} \\qquad L_{CE}=-\\ln p_{\\text{correct}}',
     formulaExplanation: 'ReLU gates each scalar. Softmax converts a vector of logits into probabilities. Cross-entropy is large when the model assigns a small probability to the correct class.',
-    code: 'import torch\nimport torch.nn.functional as F\n\n# Compare common activations on the same pre-activation values\nvalues = torch.tensor([-2.0, 0.0, 2.0])\nprint("ReLU:", F.relu(values).tolist())\nprint("sigmoid at zero:", torch.sigmoid(torch.tensor(0.0)).item())\nprint("tanh at zero:", torch.tanh(torch.tensor(0.0)).item())\n\n# Multi-class classification uses raw logits and a class index\nlogits = torch.tensor([[2.0, 0.5, -1.0]])\ntarget = torch.tensor([0])\nprobabilities = torch.softmax(logits, dim=1)\nloss = F.cross_entropy(logits, target)\nprint("probabilities:", probabilities.round(decimals=3).tolist())\nprint("cross-entropy:", round(loss.item(), 3))',
+    code: 'import torch\nimport torch.nn.functional as F\n\n# Compare common activations on the same pre-activation values\nvalues = torch.tensor([-2.0, 0.0, 2.0])\nprint("ReLU:", F.relu(values).tolist())\nprint("sigmoid at zero:", torch.sigmoid(torch.tensor(0.0)).item())\nprint("tanh at zero:", torch.tanh(torch.tensor(0.0)).item())\n\n# Multi-class classification uses raw logits and a class index\nlogits = torch.tensor([[2.0, 0.5, -1.0]])\ntarget = torch.tensor([0])\nprobabilities = torch.softmax(logits, dim=1)\nloss = F.cross_entropy(logits, target)\nprint("probabilities:", [round(p, 3) for p in probabilities[0].tolist()])\nprint("cross-entropy:", round(loss.item(), 3))',
+    codeOutput: 'ReLU: [0.0, 0.0, 2.0]\nsigmoid at zero: 0.5\ntanh at zero: 0.0\nprobabilities: [0.786, 0.175, 0.039]\ncross-entropy: 0.241',
     codeExplanation: 'The first tensor contains pre-activation values. ReLU zeros negatives; sigmoid and tanh apply their smooth mappings. The final block keeps the raw class scores in `logits`, calculates probabilities only for inspection, and passes logits plus the correct class index to cross-entropy. `dim=1` means normalize across the class dimension.',
     practice: [
       { prompt: 'Apply ReLU to z=[−3,0,2]. Why is this not just another linear layer?', answer: '[0,0,2]; the zeroing rule is nonlinear.', solution: 'ReLU(z)=max(0,z) element by element. Negative values and zero become 0, while 2 remains 2. This piecewise rule cannot be represented by one matrix multiplication plus bias over the whole input range, so it adds nonlinear capacity.' },
@@ -93,7 +94,7 @@ export const deepLearningLessons: Lesson[] = [
   {
     number: '12', slug: 'backpropagation', title: 'Backpropagation: assigning credit for error',
     description: 'Use the chain rule to trace how each parameter contributed to a prediction error, then verify the update with PyTorch autograd.',
-    module: 'Deep learning', difficulty: 'Beginner', estimatedMinutes: 22,
+    module: 'Deep learning', difficulty: 'Intermediate', estimatedMinutes: 22,
     prerequisites: ['forward-propagation', 'gradient-descent'],
     objectives: ['Calculate a derivative through a tiny model by hand.', 'Explain why gradients flow backward through layers.', 'Use PyTorch autograd and update a parameter safely.'],
     analogy: 'A finished product misses its target. Backpropagation is like tracing the assembly line backward to estimate how much each adjustable station contributed to the final miss. The chain rule multiplies those local effects along each route.',
@@ -106,9 +107,9 @@ export const deepLearningLessons: Lesson[] = [
     ],
     formula: '\\frac{\\partial L}{\\partial w}=\\frac{\\partial L}{\\partial \\hat{y}}\\frac{\\partial \\hat{y}}{\\partial w}=2(wx-y)x',
     formulaExplanation: 'For L=(wx−y)², differentiate the outer square first, then multiply by how the prediction changes with w. This is the chain rule in a one-weight network.',
-    code: 'import torch\n\n# One learnable scalar and one training example\nweight = torch.tensor(1.0, requires_grad=True)\nfeature = torch.tensor(2.0)\ntarget = torch.tensor(4.0)\nlearning_rate = 0.1\n\n# Forward pass: prediction=2, squared loss=4\nprediction = weight * feature\nloss = (prediction - target) ** 2\n\n# Backward pass computes d(loss)/d(weight)\nloss.backward()\nprint("prediction:", prediction.item())\nprint("loss:", loss.item())\nprint("gradient:", weight.grad.item())\n\n# Update parameters without recording the update in the graph\nwith torch.no_grad():\n    weight -= learning_rate * weight.grad\n\n# Clear this gradient before another backward pass\nweight.grad = None\nnew_loss = (weight * feature - target) ** 2\nprint("updated weight:", weight.item())\nprint("new loss:", new_loss.item())',
-    codeOutput: 'prediction: 2.0\nloss: 4.0\ngradient: -8.0\nupdated weight: 1.8\nnew loss: 0.1599999964237213',
-    codeExplanation: '`requires_grad=True` marks the weight for differentiation. The forward operations build a graph. `loss.backward()` applies the chain rule and stores −8 in `weight.grad`. The `no_grad` block applies the explicit gradient-descent update without adding that mutation to the graph. Clearing `.grad` matters because PyTorch adds new gradients to existing ones. Small floating-point rounding explains the final printed decimal.',
+    code: 'import torch\n\n# One learnable scalar and one training example\nweight = torch.tensor(1.0, requires_grad=True)\nfeature = torch.tensor(2.0)\ntarget = torch.tensor(4.0)\nlearning_rate = 0.1\n\n# Forward pass: prediction=2, squared loss=4\nprediction = weight * feature\nloss = (prediction - target) ** 2\n\n# Backward pass computes d(loss)/d(weight)\nloss.backward()\nprint("prediction:", prediction.item())\nprint("loss:", loss.item())\nprint("gradient:", weight.grad.item())\n\n# Update parameters without recording the update in the graph\nwith torch.no_grad():\n    weight -= learning_rate * weight.grad\n\n# Clear this gradient before another backward pass\nweight.grad = None\nnew_loss = (weight * feature - target) ** 2\nprint("updated weight:", round(weight.item(), 4))\nprint("new loss:", round(new_loss.item(), 4))',
+    codeOutput: 'prediction: 2.0\nloss: 4.0\ngradient: -8.0\nupdated weight: 1.8\nnew loss: 0.16',
+    codeExplanation: '`requires_grad=True` marks the weight for differentiation. The forward operations build a graph. `loss.backward()` applies the chain rule and stores −8 in `weight.grad`. The `no_grad` block applies the explicit gradient-descent update without adding that mutation to the graph. Clearing `.grad` matters because PyTorch adds new gradients to existing ones. The last two prints round to four decimals because 32-bit floats would otherwise show rounding noise such as 1.7999999523.',
     practice: [
       { prompt: 'For prediction ŷ=wx, x=3, w=2, and target 8, find the prediction, squared loss, and dL/dw.', answer: 'Prediction 6, loss 4, gradient −12.', solution: 'ŷ=wx=2(3)=6. L=(6−8)²=4. The derivative is dL/dw=2(wx−y)x=2(6−8)(3)=−12.' },
       { prompt: 'Why does PyTorch training code call `optimizer.zero_grad()` before `loss.backward()`?', answer: 'PyTorch accumulates gradients, so clearing prevents gradients from earlier batches being added accidentally.', solution: 'The `.grad` field is an accumulator. If it is not cleared, the next call to backward adds the new batch gradient to the previous batch’s value. Standard independent mini-batch updates require clearing before each backward pass.' },
@@ -123,7 +124,7 @@ export const deepLearningLessons: Lesson[] = [
   {
     number: '13', slug: 'optimizers', title: 'Optimizers: choosing how parameters move',
     description: 'Gradient descent supplies a direction; optimizers shape the size, memory, and adaptivity of each training step.',
-    module: 'Deep learning', difficulty: 'Beginner', estimatedMinutes: 20,
+    module: 'Deep learning', difficulty: 'Intermediate', estimatedMinutes: 20,
     prerequisites: ['backpropagation'],
     objectives: ['Distinguish a gradient from an optimizer update.', 'Explain SGD, momentum, RMSprop, and Adam intuitively.', 'Choose a learning rate and diagnose common training curves.'],
     analogy: 'All optimizers are ways of hiking toward a lower valley. Plain SGD takes the current slope. Momentum remembers recent direction like a rolling ball. Adaptive methods adjust each parameter’s step based on recent gradient sizes, like giving each trail its own step scale.',
@@ -137,6 +138,7 @@ export const deepLearningLessons: Lesson[] = [
     formula: 'v_t=\\beta v_{t-1}+g_t \\qquad w_{t+1}=w_t-\\eta v_t',
     formulaExplanation: 'gₜ is the current gradient, β controls how much momentum is retained, and η (eta) is the learning rate. Adam adds a second moving average of squared gradients and bias correction.',
     code: 'import torch\n\n# Compare common optimizers on the same one-dimensional bowl\noptimizers = {\n    "SGD": lambda parameter: torch.optim.SGD([parameter], lr=0.1),\n    "Momentum": lambda parameter: torch.optim.SGD(\n        [parameter], lr=0.1, momentum=0.9\n    ),\n    "RMSprop": lambda parameter: torch.optim.RMSprop([parameter], lr=0.05),\n    "Adam": lambda parameter: torch.optim.Adam([parameter], lr=0.1),\n}\n\nfor name, make_optimizer in optimizers.items():\n    weight = torch.nn.Parameter(torch.tensor(-2.0))\n    optimizer = make_optimizer(weight)\n\n    for _ in range(80):\n        optimizer.zero_grad()\n        loss = (weight - 3.0) ** 2  # minimum is at weight=3\n        loss.backward()\n        optimizer.step()\n\n    print(f"{name}: weight={weight.item():.3f}")',
+    codeOutput: 'SGD: weight=3.000\nMomentum: weight=2.946\nRMSprop: weight=2.843\nAdam: weight=2.944',
     codeExplanation: 'Each optimizer receives a fresh scalar parameter initialized to −2 and sees the same differentiable loss. The loop uses the standard clear, compute, backward, step order. Their paths and convergence speeds differ because their state and step rules differ. The target minimum is 3; on a real model, compare validation results as well as training loss.',
     practice: [
       { prompt: 'Two consecutive gradients point in nearly the same direction. Which optimizer idea can build speed in that direction?', answer: 'Momentum.', solution: 'Momentum accumulates a moving average of recent gradients. Consistent directions reinforce one another; changing directions partially cancel.' },
@@ -152,7 +154,7 @@ export const deepLearningLessons: Lesson[] = [
   {
     number: '14', slug: 'convolutional-neural-networks', title: 'CNNs: learning local patterns in images',
     description: 'Convolutions reuse small filters across an image so a network can detect edges and patterns wherever they appear.',
-    module: 'Deep learning', difficulty: 'Beginner', estimatedMinutes: 22,
+    module: 'Deep learning', difficulty: 'Intermediate', estimatedMinutes: 22,
     prerequisites: ['forward-propagation', 'activation-functions-and-losses'],
     objectives: ['Explain a kernel, feature map, stride, and padding.', 'Calculate a tiny convolution by hand.', 'Read image tensor shapes in PyTorch.'],
     analogy: 'Imagine sliding the same small stencil across a large picture. Each position asks the same question, such as “is there a vertical edge here?” Reusing the stencil means the network can recognize a pattern in different parts of the image without learning a separate detector for every location.',
@@ -182,7 +184,7 @@ export const deepLearningLessons: Lesson[] = [
   {
     number: '15', slug: 'recurrent-neural-networks', title: 'RNNs and LSTMs: carrying context through a sequence',
     description: 'Sequence models reuse a hidden state from one time step to the next; gated variants learn what to remember and forget.',
-    module: 'Deep learning', difficulty: 'Beginner', estimatedMinutes: 23,
+    module: 'Deep learning', difficulty: 'Intermediate', estimatedMinutes: 23,
     prerequisites: ['forward-propagation', 'backpropagation'],
     objectives: ['Trace a recurrent hidden-state update.', 'Distinguish RNN, LSTM, and GRU at a high level.', 'Understand sequence tensor shapes and vanishing gradients.'],
     analogy: 'Reading a sentence means carrying a small notebook of useful context as each word arrives. An RNN updates that notebook every step. An LSTM adds gates that decide what to write, keep, and erase, rather than forcing every detail to remain equally important.',
@@ -212,7 +214,7 @@ export const deepLearningLessons: Lesson[] = [
   {
     number: '16', slug: 'attention-mechanism', title: 'Attention: deciding which context matters',
     description: 'Attention lets each token retrieve a weighted mixture of information from other tokens instead of compressing everything into one state.',
-    module: 'Deep learning', difficulty: 'Beginner', estimatedMinutes: 22,
+    module: 'Deep learning', difficulty: 'Intermediate', estimatedMinutes: 22,
     prerequisites: ['recurrent-neural-networks', 'forward-propagation'],
     objectives: ['Explain query, key, and value with a retrieval analogy.', 'Calculate a two-token scaled dot-product attention example.', 'Explain why multi-head attention uses several learned views.'],
     analogy: 'Imagine searching a library. Your query describes what you need, each book’s key describes what it contains, and its value is the information you can retrieve. Attention compares a query with keys, turns the matches into weights, and blends the corresponding values.',
@@ -225,7 +227,7 @@ export const deepLearningLessons: Lesson[] = [
     ],
     formula: '\\operatorname{Attention}(Q,K,V)=\\operatorname{softmax}\\left(\\frac{QK^\\top}{\\sqrt{d_k}}\\right)V',
     formulaExplanation: 'Q contains queries, K keys, V values, and dₖ is the key-vector width. The matrix before V contains one attention distribution per query position.',
-    code: 'import math\nimport torch\n\n# Two query positions, two keys, and one value per key\nqueries = torch.tensor([[1.0], [0.0]])\nkeys = torch.tensor([[1.0], [2.0]])\nvalues = torch.tensor([[10.0], [20.0]])\n\n# Score each query against each key, then normalize over keys\nkey_width = keys.shape[-1]\nscores = queries @ keys.T / math.sqrt(key_width)\nweights = torch.softmax(scores, dim=-1)\ncontext = weights @ values\nprint("attention weights:", weights.round(decimals=3).tolist())\nprint("context:", context.round(decimals=2).squeeze(-1).tolist())',
+    code: 'import math\nimport torch\n\n# Two query positions, two keys, and one value per key\nqueries = torch.tensor([[1.0], [0.0]])\nkeys = torch.tensor([[1.0], [2.0]])\nvalues = torch.tensor([[10.0], [20.0]])\n\n# Score each query against each key, then normalize over keys\nkey_width = keys.shape[-1]\nscores = queries @ keys.T / math.sqrt(key_width)\nweights = torch.softmax(scores, dim=-1)\ncontext = weights @ values\nprint("attention weights:", [[round(w, 3) for w in row] for row in weights.tolist()])\nprint("context:", [round(c, 2) for c in context.squeeze(-1).tolist()])',
     codeOutput: 'attention weights: [[0.269, 0.731], [0.5, 0.5]]\ncontext: [17.31, 15.0]',
     codeExplanation: '`queries @ keys.T` creates one score per query-key pair. The scaling uses the last dimension of keys. Softmax runs across keys (`dim=-1`), so each row sums to one. Multiplying by values forms a weighted context for each query. Real models learn vector-valued Q/K/V projections and use multiple heads.',
     practice: [
@@ -242,7 +244,7 @@ export const deepLearningLessons: Lesson[] = [
   {
     number: '17', slug: 'transformers', title: 'Transformers: building a language model from attention',
     description: 'Combine token and position embeddings, attention, feed-forward layers, residual paths, and normalization into a stack that predicts tokens.',
-    module: 'Deep learning', difficulty: 'Beginner', estimatedMinutes: 26,
+    module: 'Deep learning', difficulty: 'Intermediate', estimatedMinutes: 26,
     prerequisites: ['attention-mechanism', 'activation-functions-and-losses'],
     objectives: ['Name the main parts of a transformer block.', 'Explain why token order needs positional information.', 'Trace a prompt through a small causal transformer to next-token logits.'],
     analogy: 'A transformer is a team of reading passes over a page. Each token first gathers relevant context from other allowed tokens; then a small private workshop refines its representation. Residual paths let each pass add a correction instead of replacing everything, and normalization keeps the numerical stream manageable.',

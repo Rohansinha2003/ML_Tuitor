@@ -2,6 +2,7 @@ type ApiEnvelope<T> = { data: T } | { error: string; details?: { path: string; m
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api'
 let accessToken: string | null = null
+let refreshInFlight: Promise<string | null> | null = null
 
 export class ApiError extends Error {
   status: number
@@ -30,7 +31,13 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return 'data' in payload ? payload.data : payload as T
 }
 
-export async function refreshAccessToken(): Promise<string | null> {
+// Refresh tokens are single-use, so concurrent callers must share one request.
+export function refreshAccessToken(): Promise<string | null> {
+  refreshInFlight ??= requestAccessToken().finally(() => { refreshInFlight = null })
+  return refreshInFlight
+}
+
+async function requestAccessToken(): Promise<string | null> {
   try {
     const response = await fetch(`${apiBase}/auth/refresh`, {
       method: 'POST',
@@ -57,7 +64,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, retryA
   } catch {
     throw new ApiError(0, 'The learning service is unavailable. Your guest progress remains on this device.')
   }
-  if (response.status === 401 && retryAuth && !path.startsWith('/auth/')) {
+  if (response.status === 401 && retryAuth) {
     const token = await refreshAccessToken()
     if (token) return apiRequest<T>(path, init, false)
     accessToken = null

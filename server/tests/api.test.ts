@@ -16,6 +16,8 @@ process.env.COOKIE_SECURE = 'false'
 process.env.SMTP_USER = ''
 process.env.SMTP_PASSWORD = ''
 process.env.EMAIL_FROM = ''
+process.env.GOOGLE_CLIENT_ID = ''
+process.env.GOOGLE_CLIENT_SECRET = ''
 
 let app: (typeof import('../src/app.js'))['app']
 beforeAll(async () => {
@@ -23,10 +25,27 @@ beforeAll(async () => {
 })
 
 describe('API security boundaries', () => {
-  it('reports health without claiming a database connection', async () => {
-    const response = await request(app).get('/api/health').expect(200)
-    expect(response.body.data.status).toBe('ok')
-    expect(['connected', 'disconnected']).toContain(response.body.data.database)
+  it('reports degraded health when the database is not connected', async () => {
+    const response = await request(app).get('/api/health').expect(503)
+    expect(response.body.data).toMatchObject({ status: 'degraded', database: 'disconnected', google: false, email: false })
+  })
+
+  it('only trusts its own origins for credentialed requests', async () => {
+    const { isTrustedOrigin } = await import('../src/middleware/origin.js')
+    expect(isTrustedOrigin('http://localhost:5173')).toBe(true)
+    expect(isTrustedOrigin('https://ml-tuitor.vercel.app')).toBe(true)
+    expect(isTrustedOrigin('https://attacker.vercel.app')).toBe(false)
+    expect(isTrustedOrigin('https://ml-tuitor.vercel.app.evil.com')).toBe(false)
+  })
+
+  it('accepts a same-origin refresh attempt and rejects other origins', async () => {
+    await request(app).post('/api/auth/refresh').set('Origin', 'https://attacker.vercel.app').expect(403)
+    await request(app).post('/api/auth/refresh').set('Origin', 'http://localhost:5173').expect(401)
+  })
+
+  it('sends Google sign-in back to the login page when it is not configured', async () => {
+    const response = await request(app).get('/api/auth/google').expect(302)
+    expect(response.headers.location).toBe('http://localhost:5173/login?error=google_unavailable')
   })
 
   it('rejects private progress requests without an access token', async () => {

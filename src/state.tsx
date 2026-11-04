@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { apiRequest, ApiError } from './api'
 import { useAuth } from './AuthProvider'
+import { lessons } from './content/lessons'
 
 export type QuizAttemptSummary = { _id?: string; lessonSlug: string; score: number; totalQuestions: number; attemptedAt: string }
 export type NoteStatus = 'idle' | 'loading' | 'saving' | 'saved' | 'error'
@@ -25,6 +26,7 @@ const initial: LearningState = { completed: [], bookmarks: [], lastLesson: 'what
 type ProgressRecord = { lessonSlug: string; isCompleted: boolean; lastAccessedAt: string }
 type BookmarkRecord = { lessonSlug: string }
 type DashboardResponse = { continueLearning: { slug: string } | null }
+const hasGuestProgress = (guest: LearningState) => guest.completed.length > 0 || guest.bookmarks.length > 0 || guest.activity.length > 0 || Object.values(guest.notes).some((note) => note.trim())
 type LearningContextValue = {
   state: LearningState
   syncStatus: PersistenceStatus
@@ -60,6 +62,7 @@ export function LearningProvider({ children }: { children: ReactNode }) {
   const [syncStatus, setSyncStatus] = useState<PersistenceStatus>('loading')
   const [error, setError] = useState<string | null>(null)
   const noteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  const requestedNotes = useRef(new Set<string>())
   const state = owned.ownerId === ownerId ? owned.state : ownerId === 'guest' ? readGuestState() : initial
 
   useEffect(() => {
@@ -80,22 +83,29 @@ export function LearningProvider({ children }: { children: ReactNode }) {
     setOwned({ ownerId: userId, state: { ...initial, persistence: 'server' } })
     setSyncStatus('syncing')
     setError(null)
-    void Promise.all([
-      apiRequest<{ progress: ProgressRecord[] }>('/progress'),
+    const guest = readGuestState()
+    const imported = hasGuestProgress(guest)
+      ? apiRequest('/progress/import', { method: 'POST', body: JSON.stringify({ completed: guest.completed, bookmarks: guest.bookmarks, notes: guest.notes, activity: guest.activity }) })
+        .then(() => localStorage.setItem(key, JSON.stringify(initial)))
+        .catch(() => undefined) // Keep the local copy and try again on the next sign-in.
+      : Promise.resolve()
+    void imported.then(() => Promise.all([
+      apiRequest<{ progress: ProgressRecord[]; activity: string[] }>('/progress'),
       apiRequest<{ bookmarks: BookmarkRecord[] }>('/bookmarks'),
       apiRequest<{ attempts: QuizAttemptSummary[] }>('/quizzes/attempts?limit=100'),
-      apiRequest<{ dashboard: DashboardResponse }>('/progress/dashboard'),
-    ]).then(([progressResult, bookmarkResult, quizResult, dashboardResult]) => {
+      apiRequest<DashboardResponse>('/progress/dashboard'),
+    ])).then(([progressResult, bookmarkResult, quizResult, dashboardResult]) => {
       if (!active) return
       const ordered = progressResult.progress.slice().sort((first, second) => new Date(second.lastAccessedAt).getTime() - new Date(first.lastAccessedAt).getTime())
       const nextLesson = ordered.find((item) => !item.isCompleted) ?? ordered[0]
-      const lastLesson = dashboardResult.dashboard.continueLearning?.slug ?? nextLesson?.lessonSlug ?? initial.lastLesson
+      const lastLesson = dashboardResult.continueLearning?.slug ?? nextLesson?.lessonSlug ?? initial.lastLesson
       setOwned({ ownerId: userId, state: {
         ...initial,
         persistence: 'server',
         completed: progressResult.progress.filter((item) => item.isCompleted).map((item) => item.lessonSlug),
         bookmarks: bookmarkResult.bookmarks.map((item) => item.lessonSlug),
         lastLesson,
+        activity: progressResult.activity,
         quizAttempts: quizResult.attempts,
       } })
       setSyncStatus('synced')
@@ -111,6 +121,7 @@ export function LearningProvider({ children }: { children: ReactNode }) {
   useEffect(() => () => {
     for (const timer of noteTimers.current.values()) clearTimeout(timer)
     noteTimers.current.clear()
+    requestedNotes.current.clear()
   }, [ownerId])
 
   const commit = useCallback((update: (current: LearningState) => LearningState) => {
@@ -124,15 +135,14 @@ export function LearningProvider({ children }: { children: ReactNode }) {
   }, [ownerId])
 
   const recordActivity = useCallback(() => {
-    if (ownerId !== 'guest') return
     commit((current) => ({ ...current, activity: [...new Set([...current.activity, today()])] }))
-  }, [commit, ownerId])
+  }, [commit])
 
   const complete = useCallback(async (slug: string) => {
     if (ownerId === 'loading' || syncStatus === 'syncing') return
     try {
-      if (ownerId !== 'guest') await apiRequest(`/progress/${slug}`, { method: 'PUT', body: JSON.stringify({ isCompleted: true }) })
-      commit((current) => ({ ...current, completed: [...new Set([...current.completed, slug])], lastLesson: slug, activity: ownerId === 'guest' ? [...new Set([...current.activity, today()])] : current.activity }))
+      if (ownerId !== 'guest') await apiRequest(`/progress/${slug}`, { method: 'PUT', body: JSON.stringify({ isCompleted: true, day: today() }) })
+      commit((current) => ({ ...current, completed: [...new Set([...current.completed, slug])], lastLesson: slug, activity: [...new Set([...current.activity, today()])] }))
       setError(null)
     } catch (reason) { setError(requestError(reason)) }
   }, [commit, ownerId, syncStatus])
@@ -152,21 +162,23 @@ export function LearningProvider({ children }: { children: ReactNode }) {
 
   const visit = useCallback((slug: string) => {
     if (ownerId === 'loading' || (ownerId !== 'guest' && syncStatus !== 'synced')) return
-    commit((current) => ({ ...current, lastLesson: slug, activity: ownerId === 'guest' ? [...new Set([...current.activity, today()])] : current.activity }))
-    if (ownerId !== 'guest') void apiRequest(`/progress/${slug}/accessed`, { method: 'POST' }).catch((reason: unknown) => setError(requestError(reason)))
+    commit((current) => ({ ...current, lastLesson: slug, activity: [...new Set([...current.activity, today()])] }))
+    if (ownerId !== 'guest') void apiRequest(`/progress/${slug}/accessed`, { method: 'POST', body: JSON.stringify({ day: today() }) }).catch((reason: unknown) => setError(requestError(reason)))
   }, [commit, ownerId, syncStatus])
 
   const loadNote = useCallback(async (slug: string) => {
-    if (ownerId === 'guest' || ownerId === 'loading' || syncStatus !== 'synced' || state.noteStatuses[slug] === 'loading' || state.noteStatuses[slug] === 'saved') return
+    if (ownerId === 'guest' || ownerId === 'loading' || syncStatus !== 'synced' || requestedNotes.current.has(slug)) return
+    requestedNotes.current.add(slug)
     commit((current) => ({ ...current, noteStatuses: { ...current.noteStatuses, [slug]: 'loading' } }))
     try {
       const result = await apiRequest<{ note: { content: string } | null }>(`/notes/${slug}`)
-      commit((current) => ({ ...current, notes: { ...current.notes, [slug]: result.note?.content ?? '' }, noteStatuses: { ...current.noteStatuses, [slug]: 'saved' } }))
+      // If the learner started typing while this was loading, what they typed wins.
+      commit((current) => current.noteStatuses[slug] === 'loading' ? { ...current, notes: { ...current.notes, [slug]: result.note?.content ?? '' }, noteStatuses: { ...current.noteStatuses, [slug]: 'saved' } } : current)
     } catch (reason) {
       commit((current) => ({ ...current, noteStatuses: { ...current.noteStatuses, [slug]: 'error' } }))
       setError(requestError(reason))
     }
-  }, [commit, ownerId, state.noteStatuses, syncStatus])
+  }, [commit, ownerId, syncStatus])
 
   const saveNote = useCallback((slug: string, note: string) => {
     commit((current) => ({ ...current, notes: { ...current.notes, [slug]: note }, noteStatuses: { ...current.noteStatuses, [slug]: ownerId === 'guest' ? 'saved' : 'saving' } }))
@@ -193,12 +205,12 @@ export function LearningProvider({ children }: { children: ReactNode }) {
 
   const recordQuizAttempt = useCallback(async (slug: string, selectedIndex: number) => {
     if (ownerId === 'loading' || syncStatus === 'syncing') return
-    const lesson = (await import('./content/lessons')).lessons.find((item) => item.slug === slug)
+    const lesson = lessons.find((item) => item.slug === slug)
     if (!lesson) return
     try {
       let attempt: QuizAttemptSummary
       if (ownerId === 'guest') {
-        attempt = { lessonSlug: slug, score: selectedIndex === lesson.quiz.answer ? 1 : 0, totalQuestions: lesson.quiz.options.length, attemptedAt: new Date().toISOString() }
+        attempt = { lessonSlug: slug, score: selectedIndex === lesson.quiz.answer ? 1 : 0, totalQuestions: 1, attemptedAt: new Date().toISOString() }
       } else {
         const result = await apiRequest<{ attempt: QuizAttemptSummary }>('/quizzes/attempts', { method: 'POST', body: JSON.stringify({ lessonSlug: slug, selectedIndex }) })
         attempt = result.attempt
@@ -208,7 +220,9 @@ export function LearningProvider({ children }: { children: ReactNode }) {
     } catch (reason) { setError(requestError(reason)) }
   }, [commit, ownerId, syncStatus])
 
-  return <LearningContext.Provider value={{ state, syncStatus, error, clearError: () => setError(null), complete, bookmark, visit, recordActivity, loadNote, saveNote, recordQuizAttempt }}>{children}</LearningContext.Provider>
+  const clearError = useCallback(() => setError(null), [])
+
+  return <LearningContext.Provider value={{ state, syncStatus, error, clearError, complete, bookmark, visit, recordActivity, loadNote, saveNote, recordQuizAttempt }}>{children}</LearningContext.Provider>
 }
 
 export function useLearning() {

@@ -12,7 +12,8 @@ import {
   UserCheck
 } from 'lucide-react'
 import { useAuth } from './AuthProvider'
-import { apiUrl, ApiError } from './api'
+import { ApiError } from './api'
+import { GoogleButton } from './GoogleButton'
 import { lessons } from './content/lessons'
 
 interface LandingPageProps {
@@ -136,13 +137,13 @@ export function LandingPage({ theme, setTheme }: LandingPageProps) {
             </h1>
 
             <p className="landing-subhead">
-              Visual parameter-space simulators, intuitive derivations, and 17 comprehensive lessons—from linear regression to modern transformers.
+              Visual parameter-space simulators, intuitive derivations, and {lessons.length} comprehensive lessons—from linear regression to transformers, RAG, and production systems.
             </p>
 
             <div className="landing-feature-bullets">
               <div className="landing-bullet">
                 <span className="bullet-dot" />
-                <span><strong>17 authored interactive lessons</strong> with live formulas and geometric intuitions</span>
+                <span><strong>{lessons.length} authored lessons</strong> with formulas, runnable code, and worked solutions</span>
               </div>
               <div className="landing-bullet">
                 <span className="bullet-dot" />
@@ -232,14 +233,7 @@ export function LandingPage({ theme, setTheme }: LandingPageProps) {
 
                   <div className="landing-auth-body">
                     {/* Google OAuth Quick Sign In */}
-                    <button
-                      className="google-auth-button landing-google-btn"
-                      type="button"
-                      onClick={() => window.location.assign(`${apiUrl('/auth/google')}?returnTo=/overview`)}
-                    >
-                      <span className="google-mark">G</span>
-                      Continue with Google
-                    </button>
+                    <GoogleButton returnTo="/overview" className="landing-google-btn" />
 
                     <div className="auth-divider landing-divider">
                       <span>or continue with email</span>
@@ -406,7 +400,7 @@ export function LandingPage({ theme, setTheme }: LandingPageProps) {
               </div>
               <h3>Visual Simulators</h3>
               <p>
-                Manipulate learning rates, loss functions, decision boundaries, and polynomial fits in real-time interactive canvases.
+                Adjust learning rates, activation functions, decision boundaries, and polynomial fits and watch the model respond in real time.
               </p>
             </div>
 
@@ -417,7 +411,7 @@ export function LandingPage({ theme, setTheme }: LandingPageProps) {
               </div>
               <h3>First-Principles Curriculum</h3>
               <p>
-                17 curated lessons covering linear models, logistic regression, decision trees, neural backpropagation, and transformer attention.
+                {lessons.length} lessons covering linear models, logistic regression, decision trees, backpropagation, computer vision, language models, and production AI.
               </p>
             </div>
 
@@ -428,7 +422,7 @@ export function LandingPage({ theme, setTheme }: LandingPageProps) {
               </div>
               <h3>Frictionless Privacy</h3>
               <p>
-                All lesson progress, notes, and interactive states work offline in guest mode, or automatically sync when you sign in.
+                Lesson progress and notes stay on your device in guest mode, and move into your account when you sign in.
               </p>
             </div>
           </div>
@@ -441,7 +435,7 @@ export function LandingPage({ theme, setTheme }: LandingPageProps) {
           <div className="landing-trajectory-header">
             <div>
               <span className="landing-section-eyebrow">CURRICULUM PREVIEW</span>
-              <h2 className="landing-section-title">From foundational calculus to attention layers.</h2>
+              <h2 className="landing-section-title">From first predictions to production systems.</h2>
             </div>
             <Link to="/curriculum" className="landing-outline-btn">
               Explore All {lessons.length} Lessons <ArrowRight size={14} />

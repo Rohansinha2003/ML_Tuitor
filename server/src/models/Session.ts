@@ -3,6 +3,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose'
 const sessionSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   refreshTokenHash: { type: String, required: true, select: false },
+  previousRefreshTokenHash: { type: String, select: false, default: undefined },
   expiresAt: { type: Date, required: true },
   revokedAt: { type: Date, default: null },
   rotatedAt: { type: Date, default: null },

@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { Types } from 'mongoose'
 import { QuizAttempt } from '../models/QuizAttempt.js'
 import { LessonProgress } from '../models/LessonProgress.js'
 import { authenticate } from '../middleware/authenticate.js'
@@ -15,7 +16,8 @@ quizRouter.post('/', validateBody(quizAttemptSchema), async (request, response) 
   const lesson = findPublishedLesson(lessonSlug)
   if (!lesson) throw new HttpError(404, 'Published lesson not found')
   if (selectedIndex >= lesson.quiz.options.length) throw new HttpError(400, 'Selected answer is outside the quiz options')
-  const totalQuestions = lesson.quiz.options.length
+  // Each lesson has one check question; options are not questions.
+  const totalQuestions = 1
   const score = selectedIndex === lesson.quiz.answer ? 1 : 0
   const [attempt] = await Promise.all([
     QuizAttempt.create({ userId: request.auth!.userId, lessonSlug, score, totalQuestions, attemptedAt: new Date() }),
@@ -35,7 +37,7 @@ quizRouter.get('/', async (request, response) => {
     QuizAttempt.find({ userId, lessonSlug: { $in: [...publishedLessonSlugs] } }).sort({ attemptedAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
     QuizAttempt.countDocuments({ userId, lessonSlug: { $in: [...publishedLessonSlugs] } }),
     QuizAttempt.aggregate([
-      { $match: { userId: request.auth!.userId, lessonSlug: { $in: [...publishedLessonSlugs] } } },
+      { $match: { userId: new Types.ObjectId(userId), lessonSlug: { $in: [...publishedLessonSlugs] } } },
       { $addFields: { ratio: { $divide: ['$score', '$totalQuestions'] } } },
       { $sort: { ratio: -1, attemptedAt: -1 } },
       { $group: { _id: '$lessonSlug', attempt: { $first: '$$ROOT' } } },

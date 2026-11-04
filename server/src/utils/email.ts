@@ -23,6 +23,10 @@ export async function sendAccountEmail(to: string, subject: string, text: string
   })
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+}
+
 function baseEmailTemplate({
   headline,
   subhead,
@@ -42,7 +46,7 @@ function baseEmailTemplate({
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${headline}</title>
+  <title>${headline.replace(/<[^>]*>/g, '')}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f6f6f1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #192a25;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f6f6f1; padding: 40px 16px;">
@@ -122,7 +126,7 @@ function baseEmailTemplate({
  * Sends a welcome confirmation email containing the verification link and home page URL.
  */
 export async function sendWelcomeVerificationEmail(to: string, name: string, token: string) {
-  const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${token}`
+  const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(token)}`
   const homeUrl = env.CLIENT_ORIGIN
 
   const subject = `Welcome to DeepNova — Confirm your account`
@@ -142,7 +146,7 @@ DeepNova Studio
 Built for curious minds.`
 
   const html = baseEmailTemplate({
-    headline: `Welcome to DeepNova, ${name}!`,
+    headline: `Welcome to DeepNova, ${escapeHtml(name)}!`,
     subhead: 'Your account has been created. Please confirm your email to activate your learning workspace.',
     contentHtml: `
       <p style="margin: 0 0 14px;">
@@ -184,11 +188,11 @@ DeepNova Studio
 Built for curious minds.`
 
   const html = baseEmailTemplate({
-    headline: `Welcome aboard, ${name}!`,
+    headline: `Welcome aboard, ${escapeHtml(name)}!`,
     subhead: 'Your account is confirmed and your personal learning workspace is active.',
     contentHtml: `
       <p style="margin: 0 0 14px;">
-        Your DeepNova account is all set. You now have access to all 17 interactive lessons, 2D parameter simulators, bookmarks, and quiz progress synced to the cloud.
+        Your DeepNova account is all set. You now have access to every lesson and interactive lab, with bookmarks, notes, and quiz progress synced to your account.
       </p>
       <p style="margin: 0;">
         Ready to dive in? Launch the studio from our home page or explore our interactive playgrounds.

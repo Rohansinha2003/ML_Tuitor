@@ -1,48 +1,62 @@
 # DeepNova
 
-A learning studio for machine learning and AI.
+A learning studio for machine learning and AI: 29 lessons across eight modules, interactive labs, guided projects, and interview practice. Guests can learn without an account, and signing in syncs progress across devices.
 
 ## Run locally
 
-Requirements: Node.js 20.19+ or 22.12+ and npm.
+Requirements: Node.js 22.12+ and npm.
 
 ```sh
 npm install
-npm run dev
+cp server/.env.example server/.env   # then fill it in
+npm run dev:server                   # API on http://localhost:5001
+npm run dev                          # app on http://localhost:5173
 ```
 
-Open the URL printed by Vite. The frontend works in guest mode without credentials. For authentication and MongoDB persistence, copy `server/.env.example` to `server/.env`, fill in the Atlas URI and JWT secrets, then run `npm run dev:server` in a second terminal. The production build is `npm run build`; run the configured ESLint checks with `npm run lint` and the API checks with `npm run test:server`.
+If `MONGODB_URI` is empty, local development uses a temporary in-memory database that is erased on restart. Keep `VITE_API_BASE_URL` unset: Vite proxies `/api` to the local API, and Vercel serves it from the same origin.
 
-The frontend uses `/api` by default. Vite proxies that path to `http://localhost:5001` during local development, and Vercel routes it to the bundled Express function in `api/index.js`. Set `VITE_API_BASE_URL` only when the API is hosted separately.
+## Commands
 
-## What is included
+| Command | What it does |
+| --- | --- |
+| `npm run check:env` | Tests `server/.env` against MongoDB, Google, and your SMTP server, and prints what to fix. Read-only. |
+| `npm run build` | Typechecks everything, then builds the frontend, the server, and `api/index.js`. |
+| `npm run lint` | Runs ESLint. |
+| `npm run test:server` | Runs API, integration, and content tests. Integration tests use an in-memory database. |
+| `npx tsx server/scripts/check-lessons.ts <python>` | Runs every lesson's code example and compares the output with what the lesson publishes. Needs NumPy, pandas, scikit-learn, and PyTorch. |
 
-- Seventeen authored lessons across ML foundations and a Deep Learning sequence from perceptrons through transformers, with plain-language explanations, worked examples, KaTeX formulas, PyTorch snippets, practice answers, quizzes, takeaways, interview questions, and mini projects.
-- Roadmap filters, lesson search (including `Cmd/Ctrl+K`), accessible lesson navigation, expandable practice answers, and code copy.
-- Browser-local lesson completion, bookmarks, notes, and activity-based streaks.
-- Revision cards sourced from completed or bookmarked lessons.
-- Five interactive visual labs: linear regression, gradient descent, overfitting vs. underfitting, KNN decision boundaries, and K-means clustering. Each has responsive controls, parameter explanations, and a reset action.
-- Project briefs and interview practice prompts. Dataset licenses, attribution, and execution are not implied by these briefs.
-- Light/dark themes and mobile navigation.
-- Email/password authentication with rotating HttpOnly refresh cookies, MongoDB-backed progress, bookmarks, notes, and quiz attempts when the API is configured.
-- Google OAuth sign-in/sign-up through `/api/auth/google` when Google Cloud credentials are configured.
+## Google sign-in
 
-## Content model
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), open your OAuth 2.0 web client.
+2. Under **Authorized redirect URIs**, add these, each exactly as written:
+   - `http://localhost:5001/api/auth/google/callback`
+   - `https://YOUR-PRODUCTION-DOMAIN/api/auth/google/callback`
+3. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in `server/.env`, and the production values in Vercel.
+4. If the consent screen is in **Testing** mode, only listed test users can sign in. Publish it to open sign-in to everyone.
+5. Run `npm run check:env`.
 
-Lesson data is kept outside the UI in `src/content/lessons.ts`. `Lesson` and `LessonSection` provide the schema for objectives, prerequisites, explanations, formula text, code, practice, quiz feedback, key takeaways, interview answers, and related lessons. `modules` describes the wider roadmap; topics without published lesson data are explicitly marked as planned.
+Signing in with Google links to an existing account with the same email. If that account's email was never verified, its password and sessions are removed first, because anyone could have registered it.
 
-To add a lesson, create a `Lesson` entry and add its slug to the appropriate course module. The reader, search, curriculum, progress, and revision views consume that shared data.
+## Deploy to Vercel
 
-## Persistence and security
+Import the repository with the default settings. `npm run build` regenerates `api/index.js`, which serves `/api`. Set these in Project Settings → Environment Variables:
 
-This version stores progress in the browser's `localStorage`. It has no authentication, Supabase connection, server-side data store, or remote Python execution. PyTorch snippets are copyable examples, not executed by the app; run them in a separate Python environment with PyTorch installed. `.env.example` documents that no environment variables are needed for this demo. Do not put secrets in frontend environment variables.
+| Variable | Notes |
+| --- | --- |
+| `MONGODB_URI` | Required. In Atlas → Network Access, allow `0.0.0.0/0`, because Vercel has no fixed IP addresses. |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | Required, 32+ characters, and different from each other. |
+| `CLIENT_ORIGIN` | Your production URL, such as `https://ml-tuitor.vercel.app`, with no trailing slash. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL` | The callback must be your production URL, not localhost. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | Turn on email verification and password reset. |
 
-When signed in, progress is owned by the authenticated MongoDB user and is loaded through the Express API. Guest progress remains local. Password reset and email verification require `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `EMAIL_FROM` to be configured. For Google OAuth, create a Google OAuth web client and add `http://localhost:5001/api/auth/google/callback` as an authorized redirect URI, then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL` in `server/.env`. Use the HTTPS callback URL in production.
+After deploying, open `/api/health`. It returns `200` with `database: "connected"` when healthy. Otherwise it returns `503` with a `databaseIssue` of `not-configured`, `authentication`, `network`, or `unknown`.
 
-## Vercel deployment
+## How it fits together
 
-Import the repository into Vercel with the default root directory and build command (`npm run build`). Configure the server environment variables from `server/.env.example` in the Vercel project settings, including a persistent `MONGODB_URI`, strong JWT secrets, and SMTP settings if password reset/email verification should be enabled. Keep `VITE_API_BASE_URL` unset so browser requests remain same-origin. If Google sign-in is enabled, use the deployed HTTPS callback URL for `GOOGLE_CALLBACK_URL`.
+- **Frontend:** React 19, TypeScript, Vite, and React Router in `src/`. Routes are lazy-loaded.
+- **API:** Express 5 and Mongoose in `server/src/`. `server.ts` runs it locally, and `serverless.ts` is the Vercel entry, bundled to `api/index.js`.
+- **Content:** Everything lives in `src/content/`, and the API imports the same files, so there is one source of truth. To add a lesson, add its draft and its entry in `lessonExtras.ts`, then add its slug to a module in `lessons.ts`. Numbering and next/previous follow the module order, and `content.test.ts` catches broken references.
+- **Accounts:** Short-lived access tokens are held in memory, with rotating refresh tokens in an HttpOnly cookie. A refresh token replayed outside a 30-second grace window revokes its session.
+- **Progress:** Guest progress stays in `localStorage` and moves into the account at sign-in. Existing account data wins any conflict.
 
-## Technology
-
-React 19, TypeScript, Vite, React Router, Tailwind CSS 4 (PostCSS), custom responsive CSS, Recharts, KaTeX, Lucide React, and ESLint.
+Lesson code is copyable, not run by the app. Do not put secrets in frontend environment variables.

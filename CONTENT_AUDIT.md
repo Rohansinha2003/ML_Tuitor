@@ -1,10 +1,10 @@
 # Lesson Content Audit
 
-Audit date: 2026-10-19
+Audit date: 2026-11-04
 
 ## Scope
 
-The content store contains 17 published lessons: eight ML foundations and nine new Deep Learning lessons. Curriculum entries with empty `lessonSlugs` are roadmap placeholders, not lessons.
+The content store contains 29 published lessons across eight modules. Every module has published lessons, and lesson numbers are assigned from curriculum order in `src/content/lessons.ts`, so the numbers below are the original authoring labels.
 
 ## Published Lessons
 
@@ -33,13 +33,34 @@ The content store contains 17 published lessons: eight ML foundations and nine n
 | 16 — Attention | Query/key/value, scaled dot-product arithmetic, masks, multiple heads, and a runnable tensor example. |
 | 17 — Transformers | Embeddings, position, transformer blocks, causal language modeling, architecture families, limits, and a PyTorch causal-stack example. |
 
-PyTorch is not installed in the available workspace interpreter, so the examples were checked for Python syntax and their numerical demonstrations were hand-verified, but framework execution is not claimed. Run them in an environment with a compatible PyTorch install before using them in production work.
+## Applied Lessons
 
-## Roadmap Placeholders
+| Module | Lessons |
+| --- | --- |
+| Supervised learning | Logistic regression; decision trees, random forests, and boosting; feature engineering and leak-proof pipelines. |
+| Computer vision | Image data and augmentation; transfer learning; object detection and segmentation. |
+| Language & LLMs | Tokens and embeddings; how LLMs generate text; retrieval-augmented generation. |
+| Production AI | Serving models; monitoring and drift; responsible AI. |
 
-- The dedicated Computer Vision, Language & LLMs, and Production AI modules still have no published lesson slugs. Introductory CNN content is currently part of the Deep Learning course.
-- The current module list does not yet contain dedicated mathematics, statistics/probability, NLP, research, or MLOps lesson collections.
-- The Projects page has three guided briefs, not the requested full project catalog; dataset attribution, runnable project code, and licenses are not supplied.
-- Interview prep has four foundational prompts, not the requested role-specific question banks.
+## Added to Every Lesson
 
-These gaps are intentionally visible in the curriculum rather than represented as completed material.
+- Common mistakes, each paired with its fix.
+- Further reading, with every link checked for an HTTP 200 on the audit date.
+
+## Verification
+
+All 29 code examples were executed on 2026-11-04 with Python 3.9, PyTorch 2.8.0 (CPU), scikit-learn 1.6.1, and NumPy 2.0.2, and their printed output matches the published output exactly. That run corrected the published output of two lessons and added the missing output of four. To repeat it:
+
+```sh
+npx tsx server/scripts/check-lessons.ts /path/to/python
+```
+
+Seeded results can differ across library versions and hardware, particularly the optimizer and neural network examples.
+
+Hand calculations in the new lessons were checked against the code where the code computes them. Prose has not had an independent review by a subject expert.
+
+## Known Gaps
+
+- Each lesson has a single quiz question.
+- Project briefs name suggested datasets, but dataset licenses must be confirmed before publishing work based on them.
+- Interview prep has 31 foundational questions, not role-specific question banks.

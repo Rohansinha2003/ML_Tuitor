@@ -13,6 +13,7 @@ const userSchema = new Schema({
   resetTokenHash: { type: String, select: false, default: undefined },
   resetExpiresAt: { type: Date, select: false, default: undefined },
   passwordChangedAt: { type: Date, default: null },
+  activityDays: { type: [String], select: false, default: undefined },
 }, { timestamps: true })
 
 userSchema.index({ email: 1 }, { unique: true })

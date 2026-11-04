@@ -4,21 +4,21 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit2 from "express-rate-limit";
-import mongoose from "mongoose";
 
 // server/src/config/env.ts
 import dotenv from "dotenv";
 import { z } from "zod";
-dotenv.config();
+dotenv.config({ path: [".env", "server/.env"] });
 var defaultAccessSecret = "deepnova_default_jwt_access_secret_32_bytes_long_min";
 var defaultRefreshSecret = "deepnova_default_jwt_refresh_secret_32_bytes_long_min";
-var defaultOrigin = process.env.CLIENT_ORIGIN || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : void 0) || (process.env.NODE_ENV === "production" ? "https://ml-tuitor.vercel.app" : "http://localhost:5173");
+var vercelHost = process.env.VERCEL_ENV === "production" && process.env.VERCEL_PROJECT_PRODUCTION_URL ? process.env.VERCEL_PROJECT_PRODUCTION_URL : process.env.VERCEL_URL;
+var defaultOrigin = (vercelHost ? `https://${vercelHost}` : void 0) || (process.env.NODE_ENV === "production" ? "https://ml-tuitor.vercel.app" : "http://localhost:5173");
 var defaultCookieSecure = process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === "true" : process.env.NODE_ENV === "production";
 var schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(5001),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   MONGODB_URI: z.string().min(1).optional().or(z.literal("")),
-  CLIENT_ORIGIN: z.string().url().default(defaultOrigin),
+  CLIENT_ORIGIN: z.preprocess((value) => value || void 0, z.string().url().default(defaultOrigin)).transform((value) => value.replace(/\/+$/, "")),
   JWT_ACCESS_SECRET: z.string().min(32).default(() => {
     return process.env.JWT_ACCESS_SECRET || defaultAccessSecret;
   }),
@@ -47,11 +47,53 @@ if (parsed.data.NODE_ENV === "production" && (parsed.data.JWT_ACCESS_SECRET === 
 if (parsed.data.NODE_ENV === "production" && !parsed.data.COOKIE_SECURE) {
   console.warn("\u26A0\uFE0F COOKIE_SECURE is false in production environment");
 }
+var googleCallbackUrl = parsed.data.GOOGLE_CALLBACK_URL || `${parsed.data.CLIENT_ORIGIN}/api/auth/google/callback`;
+if (parsed.data.NODE_ENV === "production" && parsed.data.GOOGLE_CLIENT_ID && /localhost|127\.0\.0\.1/.test(googleCallbackUrl)) {
+  console.warn("GOOGLE_CALLBACK_URL points at localhost in production; Google sign-in will fail for deployed users");
+}
 var env = {
   ...parsed.data,
+  GOOGLE_CALLBACK_URL: googleCallbackUrl,
   emailConfigured: Boolean(parsed.data.SMTP_HOST && parsed.data.SMTP_USER && parsed.data.SMTP_PASSWORD && parsed.data.EMAIL_FROM),
-  googleConfigured: Boolean(parsed.data.GOOGLE_CLIENT_ID && parsed.data.GOOGLE_CLIENT_SECRET && parsed.data.GOOGLE_CALLBACK_URL)
+  googleConfigured: Boolean(parsed.data.GOOGLE_CLIENT_ID && parsed.data.GOOGLE_CLIENT_SECRET)
 };
+
+// server/src/database.ts
+import mongoose from "mongoose";
+var connection = null;
+var lastFailure = null;
+mongoose.set("strictQuery", true);
+mongoose.set("bufferCommands", false);
+function classifyFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/authentication failed|bad auth/i.test(message)) return "authentication";
+  if (/whitelist|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|querySrv|Server selection timed out|ReplicaSetNoPrimary|Could not connect/i.test(message)) return "network";
+  return "unknown";
+}
+async function connectDatabase(uri) {
+  if (!uri) {
+    lastFailure = "not-configured";
+    throw new Error("MONGODB_URI is not configured");
+  }
+  if (mongoose.connection.readyState === 1) return;
+  connection ??= mongoose.connect(uri, {
+    serverSelectionTimeoutMS: 8e3,
+    connectTimeoutMS: 8e3,
+    maxPoolSize: 10
+  }).then(() => {
+    lastFailure = null;
+  }).catch((error) => {
+    lastFailure = classifyFailure(error);
+    throw new Error(`MongoDB connection failed (${lastFailure})`, { cause: error });
+  }).finally(() => {
+    connection = null;
+  });
+  await connection;
+}
+function databaseStatus() {
+  const connected = mongoose.connection.readyState === 1;
+  return { database: connected ? "connected" : "disconnected", ...!connected && lastFailure ? { databaseIssue: lastFailure } : {} };
+}
 
 // server/src/middleware/errorHandler.ts
 import { ZodError } from "zod";
@@ -61,6 +103,7 @@ var HttpError = class extends Error {
     this.status = status;
     this.name = "HttpError";
   }
+  status;
 };
 var errorHandler = (error, _request, response, next) => {
   void next;
@@ -80,6 +123,34 @@ var errorHandler = (error, _request, response, next) => {
   response.status(500).json({ error: "An unexpected server error occurred" });
 };
 
+// server/src/middleware/origin.ts
+var trustedOrigins = /* @__PURE__ */ new Set(
+  [
+    env.CLIENT_ORIGIN,
+    "https://ml-tuitor.vercel.app",
+    ...[process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL].filter(Boolean).map((host) => `https://${host}`)
+  ]
+);
+function isTrustedOrigin(origin) {
+  if (trustedOrigins.has(origin)) return true;
+  return env.NODE_ENV !== "production" && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+}
+function isSameOrigin(request, origin) {
+  try {
+    return new URL(origin).host === request.get("host");
+  } catch {
+    return false;
+  }
+}
+var requireClientOrigin = (request, _response, next) => {
+  const origin = request.get("origin");
+  if (!origin || !(isTrustedOrigin(origin) || isSameOrigin(request, origin))) {
+    next(new HttpError(403, "Request origin is not allowed"));
+    return;
+  }
+  next();
+};
+
 // server/src/routes/auth.ts
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
@@ -92,6 +163,7 @@ import { Schema, model } from "mongoose";
 var sessionSchema = new Schema({
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
   refreshTokenHash: { type: String, required: true, select: false },
+  previousRefreshTokenHash: { type: String, select: false, default: void 0 },
   expiresAt: { type: Date, required: true },
   revokedAt: { type: Date, default: null },
   rotatedAt: { type: Date, default: null }
@@ -113,7 +185,8 @@ var userSchema = new Schema2({
   verificationExpiresAt: { type: Date, select: false, default: void 0 },
   resetTokenHash: { type: String, select: false, default: void 0 },
   resetExpiresAt: { type: Date, select: false, default: void 0 },
-  passwordChangedAt: { type: Date, default: null }
+  passwordChangedAt: { type: Date, default: null },
+  activityDays: { type: [String], select: false, default: void 0 }
 }, { timestamps: true });
 userSchema.index({ email: 1 }, { unique: true });
 var User = model2("User", userSchema);
@@ -138,17 +211,6 @@ var authenticate = async (request, _response, next) => {
   }
 };
 
-// server/src/middleware/origin.ts
-var requireClientOrigin = (request, _response, next) => {
-  const origin = request.get("origin");
-  const isAllowed = origin && (origin === env.CLIENT_ORIGIN || origin === "https://ml-tuitor.vercel.app" || process.env.VERCEL_URL && origin === `https://${process.env.VERCEL_URL}` || origin.endsWith(".vercel.app"));
-  if (!isAllowed) {
-    next(new HttpError(403, "Request origin is not allowed"));
-    return;
-  }
-  next();
-};
-
 // server/src/middleware/validate.ts
 function validateBody(schema2) {
   return (request, _response, next) => {
@@ -167,6 +229,7 @@ import { z as z2 } from "zod";
 var password = z2.string().min(12).max(128).refine((value) => Buffer.byteLength(value, "utf8") <= 72, "Password must be at most 72 UTF-8 bytes");
 var email = z2.string().trim().email().max(254).transform((value) => value.toLowerCase());
 var lessonSlug = z2.string().trim().min(1).max(120).regex(/^[a-z0-9-]+$/);
+var activityDay = z2.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 var signupSchema = z2.object({
   name: z2.string().trim().min(1).max(100),
   email,
@@ -175,22 +238,32 @@ var signupSchema = z2.object({
 }).refine((value) => value.password === value.confirmPassword, { path: ["confirmPassword"], message: "Passwords do not match" });
 var loginSchema = z2.object({ email, password: z2.string().min(1).max(128) });
 var forgotPasswordSchema = z2.object({ email });
+var resendVerificationSchema = z2.object({ email });
 var resetPasswordSchema = z2.object({ token: z2.string().min(32).max(256), password, confirmPassword: z2.string() }).refine((value) => value.password === value.confirmPassword, { path: ["confirmPassword"], message: "Passwords do not match" });
 var verifyEmailSchema = z2.object({ token: z2.string().min(32).max(256) });
 var changePasswordSchema = z2.object({ currentPassword: z2.string().min(1).max(128), password, confirmPassword: z2.string() }).refine((value) => value.password === value.confirmPassword, { path: ["confirmPassword"], message: "Passwords do not match" });
 var progressSchema = z2.object({
   isCompleted: z2.boolean().optional(),
-  lastSection: z2.string().trim().max(160).nullable().optional()
+  lastSection: z2.string().trim().max(160).nullable().optional(),
+  day: activityDay.optional()
 });
 var noteSchema = z2.object({ content: z2.string().max(2e4) });
 var quizAttemptSchema = z2.object({ lessonSlug, selectedIndex: z2.number().int().nonnegative() });
+var accessedSchema = z2.object({ day: activityDay.optional() });
+var importProgressSchema = z2.object({
+  completed: z2.array(lessonSlug).max(500).default([]),
+  bookmarks: z2.array(lessonSlug).max(500).default([]),
+  notes: z2.record(lessonSlug, z2.string().max(2e4)).default({}),
+  activity: z2.array(activityDay).max(3660).default([]),
+  lastLesson: lessonSlug.optional()
+});
 var listQuerySchema = z2.object({ page: z2.coerce.number().int().min(1).default(1), limit: z2.coerce.number().int().min(1).max(100).default(20) });
 function parseSlug(value) {
   return lessonSlug.parse(value);
 }
 
 // server/src/utils/tokens.ts
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import jwt2 from "jsonwebtoken";
 var hashToken = (token) => createHash("sha256").update(token).digest("hex");
 var createOpaqueToken = () => randomBytes(32).toString("base64url");
@@ -198,7 +271,7 @@ function createAccessToken(userId, sessionId) {
   return jwt2.sign({ type: "access", sid: sessionId }, env.JWT_ACCESS_SECRET, { subject: userId, expiresIn: "10m" });
 }
 function createRefreshToken(userId, sessionId) {
-  return jwt2.sign({ type: "refresh", sid: sessionId }, env.JWT_REFRESH_SECRET, { subject: userId, expiresIn: "30d" });
+  return jwt2.sign({ type: "refresh", sid: sessionId }, env.JWT_REFRESH_SECRET, { subject: userId, expiresIn: "30d", jwtid: randomUUID() });
 }
 
 // server/src/utils/email.ts
@@ -223,6 +296,9 @@ async function sendAccountEmail(to, subject, text, html) {
     ...html ? { html } : {}
   });
 }
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+}
 function baseEmailTemplate({
   headline,
   subhead,
@@ -236,7 +312,7 @@ function baseEmailTemplate({
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${headline}</title>
+  <title>${headline.replace(/<[^>]*>/g, "")}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f6f6f1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #192a25;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f6f6f1; padding: 40px 16px;">
@@ -312,7 +388,7 @@ function baseEmailTemplate({
 </html>`;
 }
 async function sendWelcomeVerificationEmail(to, name, token) {
-  const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${token}`;
+  const verifyUrl = `${env.CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(token)}`;
   const homeUrl = env.CLIENT_ORIGIN;
   const subject = `Welcome to DeepNova \u2014 Confirm your account`;
   const text = `Welcome to DeepNova, ${name}!
@@ -330,7 +406,7 @@ Playground: ${homeUrl}/playground
 DeepNova Studio
 Built for curious minds.`;
   const html = baseEmailTemplate({
-    headline: `Welcome to DeepNova, ${name}!`,
+    headline: `Welcome to DeepNova, ${escapeHtml(name)}!`,
     subhead: "Your account has been created. Please confirm your email to activate your learning workspace.",
     contentHtml: `
       <p style="margin: 0 0 14px;">
@@ -365,11 +441,11 @@ Quick links:
 DeepNova Studio
 Built for curious minds.`;
   const html = baseEmailTemplate({
-    headline: `Welcome aboard, ${name}!`,
+    headline: `Welcome aboard, ${escapeHtml(name)}!`,
     subhead: "Your account is confirmed and your personal learning workspace is active.",
     contentHtml: `
       <p style="margin: 0 0 14px;">
-        Your DeepNova account is all set. You now have access to all 17 interactive lessons, 2D parameter simulators, bookmarks, and quiz progress synced to the cloud.
+        Your DeepNova account is all set. You now have access to every lesson and interactive lab, with bookmarks, notes, and quiz progress synced to your account.
       </p>
       <p style="margin: 0;">
         Ready to dive in? Launch the studio from our home page or explore our interactive playgrounds.
@@ -413,16 +489,18 @@ DeepNova Studio`;
 var authRouter = Router();
 var refreshCookieName = "deepnova_refresh";
 var thirtyDaysMs = 30 * 24 * 60 * 60 * 1e3;
-var loginLimiter = rateLimit({ windowMs: 15 * 60 * 1e3, limit: 10, standardHeaders: "draft-8", legacyHeaders: false });
-var signupLimiter = rateLimit({ windowMs: 60 * 60 * 1e3, limit: 10, standardHeaders: "draft-8", legacyHeaders: false });
-var resetLimiter = rateLimit({ windowMs: 60 * 60 * 1e3, limit: 5, standardHeaders: "draft-8", legacyHeaders: false });
+var rotationGraceMs = 30 * 1e3;
+var limiterDefaults = { standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many attempts. Please wait a while and try again." }, skip: () => env.NODE_ENV === "test" };
+var loginLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1e3, limit: 10, skipSuccessfulRequests: true });
+var signupLimiter = rateLimit({ ...limiterDefaults, windowMs: 60 * 60 * 1e3, limit: 10 });
+var resetLimiter = rateLimit({ ...limiterDefaults, windowMs: 60 * 60 * 1e3, limit: 5 });
 var googleStateCookieName = "deepnova_google_state";
 var googleClient = env.googleConfigured ? new OAuth2Client(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_CALLBACK_URL) : null;
 function cookieOptions() {
   return { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: "strict", path: "/api/auth" };
 }
 function safeUser(user) {
-  return { id: user._id.toString(), name: user.name, email: user.email, avatarUrl: user.avatarUrl ?? null, emailVerified: user.emailVerified, createdAt: user.createdAt };
+  return { id: user._id.toString(), name: user.name, email: user.email, avatarUrl: user.avatarUrl ?? null, emailVerified: user.emailVerified, hasPassword: Boolean(user.passwordHash), createdAt: user.createdAt };
 }
 async function issueSession(userId, response) {
   const session = await Session.create({ userId, refreshTokenHash: "pending", expiresAt: new Date(Date.now() + thirtyDaysMs) });
@@ -447,6 +525,7 @@ function verifyRefreshToken(token) {
 }
 authRouter.post("/signup", signupLimiter, validateBody(signupSchema), async (request, response) => {
   const { name, email: email2, password: password2 } = request.body;
+  if (await User.exists({ email: email2 })) throw new HttpError(409, "An account with this email already exists. Sign in instead.");
   const verificationToken = env.emailConfigured ? createOpaqueToken() : void 0;
   const user = await User.create({
     name,
@@ -464,13 +543,6 @@ authRouter.post("/signup", signupLimiter, validateBody(signupSchema), async (req
     }
     response.status(201).json({ data: { user: safeUser(user), requiresEmailVerification: true } });
     return;
-  }
-  if (env.emailConfigured) {
-    try {
-      await sendWelcomeEmail(email2, name);
-    } catch (error) {
-      console.warn("Welcome email delivery failed:", error instanceof Error ? error.message : "Unknown error");
-    }
   }
   const accessToken = await issueSession(user.id, response);
   response.status(201).json({ data: { user: safeUser(user), accessToken, requiresEmailVerification: false } });
@@ -500,8 +572,52 @@ authRouter.post("/login", loginLimiter, validateBody(loginSchema), async (reques
   const accessToken = await issueSession(user.id, response);
   response.json({ data: { user: safeUser(user), accessToken } });
 });
+function redirectToLoginError(response, code) {
+  response.redirect(`${env.CLIENT_ORIGIN}/login?error=${code}`);
+}
+async function resolveGoogleUser(profile) {
+  const email2 = profile.email.toLowerCase();
+  const avatarUrl = profile.picture ?? null;
+  const fields = "+passwordHash +googleId";
+  const known = await User.findOne({ googleId: profile.sub }).select(fields);
+  if (known) {
+    if (avatarUrl && known.avatarUrl !== avatarUrl) {
+      known.avatarUrl = avatarUrl;
+      await known.save();
+    }
+    return { user: known, isNewUser: false };
+  }
+  const existing = await User.findOne({ email: email2 }).select(fields);
+  if (existing) {
+    if (existing.googleId) return null;
+    if (!existing.emailVerified) {
+      existing.passwordHash = void 0;
+      await Session.updateMany({ userId: existing._id, revokedAt: null }, { $set: { revokedAt: /* @__PURE__ */ new Date() } });
+    }
+    existing.googleId = profile.sub;
+    existing.emailVerified = true;
+    existing.verificationTokenHash = void 0;
+    existing.verificationExpiresAt = void 0;
+    existing.avatarUrl = existing.avatarUrl ?? avatarUrl;
+    await existing.save();
+    return { user: existing, isNewUser: false };
+  }
+  try {
+    const user = await User.create({ name: profile.name?.trim().slice(0, 100) || email2.split("@")[0], email: email2, googleId: profile.sub, authProvider: "google", emailVerified: true, avatarUrl });
+    return { user, isNewUser: true };
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === 11e3) {
+      const winner = await User.findOne({ googleId: profile.sub }).select(fields);
+      if (winner) return { user: winner, isNewUser: false };
+    }
+    throw error;
+  }
+}
 authRouter.get("/google", (request, response) => {
-  if (!googleClient) throw new HttpError(503, "Google sign-in is not configured on the server");
+  if (!googleClient) {
+    redirectToLoginError(response, "google_unavailable");
+    return;
+  }
   const state = createOpaqueToken();
   const returnTo = safeReturnTo(request.query.returnTo);
   response.cookie(googleStateCookieName, `${state}.${Buffer.from(returnTo).toString("base64url")}`, {
@@ -511,38 +627,57 @@ authRouter.get("/google", (request, response) => {
     maxAge: 10 * 60 * 1e3,
     path: "/api/auth/google"
   });
-  response.redirect(googleClient.generateAuthUrl({ access_type: "offline", scope: ["openid", "email", "profile"], state, prompt: "select_account" }));
+  response.redirect(googleClient.generateAuthUrl({ scope: ["openid", "email", "profile"], state, prompt: "select_account" }));
 });
 authRouter.get("/google/callback", async (request, response) => {
-  if (!googleClient) throw new HttpError(503, "Google sign-in is not configured on the server");
+  if (!googleClient) {
+    redirectToLoginError(response, "google_unavailable");
+    return;
+  }
   const storedState = request.cookies?.[googleStateCookieName];
   const [expectedState, encodedReturnTo] = typeof storedState === "string" ? storedState.split(".") : [];
-  const returnTo = safeReturnTo(encodedReturnTo ? Buffer.from(encodedReturnTo, "base64url").toString("utf8") : "/");
+  const returnTo = safeReturnTo(encodedReturnTo ? Buffer.from(encodedReturnTo, "base64url").toString("utf8") : "/overview");
   response.clearCookie(googleStateCookieName, { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: "lax", path: "/api/auth/google" });
-  if (!request.query.state || typeof request.query.state !== "string" || request.query.state !== expectedState) throw new HttpError(400, "Google sign-in state is invalid");
-  if (typeof request.query.code !== "string") throw new HttpError(400, "Google did not return an authorization code");
-  const { tokens } = await googleClient.getToken(request.query.code);
-  const ticket = await googleClient.verifyIdToken({ idToken: tokens.id_token, audience: env.GOOGLE_CLIENT_ID });
-  const profile = ticket.getPayload();
-  if (!profile?.sub || !profile.email || profile.email_verified !== true) throw new HttpError(400, "Google did not provide a verified email address");
-  const existing = await User.findOne({ email: profile.email.toLowerCase() }).select("+passwordHash +googleId");
-  if (existing && existing.googleId !== profile.sub) throw new HttpError(409, "An account with this email already exists. Sign in with your password first.");
-  const isNewUser = !existing;
-  const user = existing ?? await User.create({ name: profile.name?.trim() || profile.email.split("@")[0], email: profile.email.toLowerCase(), googleId: profile.sub, authProvider: "google", emailVerified: true, avatarUrl: profile.picture ?? null });
-  if (!user.googleId) {
-    user.googleId = profile.sub;
-    user.authProvider = "google";
-    user.emailVerified = true;
-    await user.save();
+  if (!expectedState || request.query.state !== expectedState) {
+    redirectToLoginError(response, "google_state");
+    return;
   }
-  if (isNewUser && env.emailConfigured) {
+  if (request.query.error) {
+    redirectToLoginError(response, request.query.error === "access_denied" ? "google_denied" : "google_failed");
+    return;
+  }
+  if (typeof request.query.code !== "string") {
+    redirectToLoginError(response, "google_failed");
+    return;
+  }
+  let profile;
+  try {
+    const { tokens } = await googleClient.getToken(request.query.code);
+    if (!tokens.id_token) throw new Error("Google returned no ID token");
+    const ticket = await googleClient.verifyIdToken({ idToken: tokens.id_token, audience: env.GOOGLE_CLIENT_ID });
+    profile = ticket.getPayload();
+  } catch (error) {
+    console.error("Google token exchange failed:", error instanceof Error ? error.message : "Unknown error");
+    redirectToLoginError(response, "google_failed");
+    return;
+  }
+  if (!profile?.sub || !profile.email || profile.email_verified !== true) {
+    redirectToLoginError(response, "google_unverified");
+    return;
+  }
+  const resolved = await resolveGoogleUser({ sub: profile.sub, email: profile.email, name: profile.name, picture: profile.picture });
+  if (!resolved) {
+    redirectToLoginError(response, "google_conflict");
+    return;
+  }
+  if (resolved.isNewUser && env.emailConfigured) {
     try {
-      await sendWelcomeEmail(user.email, user.name);
+      await sendWelcomeEmail(resolved.user.email, resolved.user.name);
     } catch (error) {
       console.warn("Welcome email delivery failed for Google user:", error instanceof Error ? error.message : "Unknown error");
     }
   }
-  await issueSession(user.id, response);
+  await issueSession(resolved.user.id, response);
   response.redirect(`${env.CLIENT_ORIGIN}${returnTo}`);
 });
 authRouter.post("/refresh", requireClientOrigin, async (request, response) => {
@@ -559,9 +694,14 @@ authRouter.post("/refresh", requireClientOrigin, async (request, response) => {
   const replacement = createRefreshToken(payload.sub, payload.sid);
   const result = await Session.updateOne(
     { _id: payload.sid, userId: payload.sub, refreshTokenHash: oldHash, revokedAt: null, expiresAt: { $gt: /* @__PURE__ */ new Date() } },
-    { $set: { refreshTokenHash: hashToken(replacement), rotatedAt: /* @__PURE__ */ new Date() } }
+    { $set: { refreshTokenHash: hashToken(replacement), previousRefreshTokenHash: oldHash, rotatedAt: /* @__PURE__ */ new Date() } }
   );
   if (result.modifiedCount !== 1) {
+    const recentlyRotated = await Session.exists({ _id: payload.sid, userId: payload.sub, previousRefreshTokenHash: oldHash, rotatedAt: { $gte: new Date(Date.now() - rotationGraceMs) }, revokedAt: null, expiresAt: { $gt: /* @__PURE__ */ new Date() } });
+    if (recentlyRotated) {
+      response.json({ data: { accessToken: createAccessToken(payload.sub, payload.sid) } });
+      return;
+    }
     await Session.updateOne({ _id: payload.sid, userId: payload.sub, revokedAt: null }, { $set: { revokedAt: /* @__PURE__ */ new Date() } });
     clearRefreshCookie(response);
     throw new HttpError(401, "Session expired; sign in again");
@@ -582,9 +722,25 @@ authRouter.post("/logout", requireClientOrigin, async (request, response) => {
   response.json({ data: { loggedOut: true } });
 });
 authRouter.get("/me", authenticate, async (request, response) => {
-  const user = await User.findById(request.auth.userId);
+  const user = await User.findById(request.auth.userId).select("+passwordHash");
   if (!user) throw new HttpError(401, "Account no longer exists");
   response.json({ data: { user: safeUser(user) } });
+});
+authRouter.post("/resend-verification", resetLimiter, validateBody(resendVerificationSchema), async (request, response) => {
+  const { email: email2 } = request.body;
+  if (!env.emailConfigured) throw new HttpError(503, "Email delivery is not configured on the server");
+  const user = await User.findOne({ email: email2, emailVerified: false });
+  if (user) {
+    const token = createOpaqueToken();
+    await User.updateOne({ _id: user._id }, { $set: { verificationTokenHash: hashToken(token), verificationExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1e3) } });
+    try {
+      await sendWelcomeVerificationEmail(email2, user.name, token);
+    } catch (error) {
+      console.error("Verification email delivery failed", error instanceof Error ? error.message : "Unknown error");
+      throw new HttpError(503, "Email delivery is temporarily unavailable. Please try again later.");
+    }
+  }
+  response.json({ data: { message: "If that account still needs verifying, a new link is on its way." } });
 });
 authRouter.post("/forgot-password", resetLimiter, validateBody(forgotPasswordSchema), async (request, response) => {
   const { email: email2 } = request.body;
@@ -611,7 +767,8 @@ authRouter.post("/reset-password", resetLimiter, validateBody(resetPasswordSchem
   const { token, password: password2 } = request.body;
   const user = await User.findOneAndUpdate(
     { resetTokenHash: hashToken(token), resetExpiresAt: { $gt: /* @__PURE__ */ new Date() } },
-    { $set: { passwordHash: await bcrypt.hash(password2, 12), passwordChangedAt: /* @__PURE__ */ new Date() }, $unset: { resetTokenHash: 1, resetExpiresAt: 1 } },
+    // Opening the emailed link proves ownership of the address, so it also verifies it.
+    { $set: { passwordHash: await bcrypt.hash(password2, 12), passwordChangedAt: /* @__PURE__ */ new Date(), emailVerified: true }, $unset: { resetTokenHash: 1, resetExpiresAt: 1, verificationTokenHash: 1, verificationExpiresAt: 1 } },
     { new: true }
   );
   if (!user) throw new HttpError(400, "Reset link is invalid or expired");
@@ -621,7 +778,7 @@ authRouter.post("/reset-password", resetLimiter, validateBody(resetPasswordSchem
 authRouter.patch("/change-password", authenticate, validateBody(changePasswordSchema), async (request, response) => {
   const { currentPassword, password: password2 } = request.body;
   const user = await User.findById(request.auth.userId).select("+passwordHash");
-  if (!user?.passwordHash || !await bcrypt.compare(currentPassword, user.passwordHash)) throw new HttpError(401, "Current password is incorrect");
+  if (!user?.passwordHash || !await bcrypt.compare(currentPassword, user.passwordHash)) throw new HttpError(400, "Current password is incorrect");
   user.passwordHash = await bcrypt.hash(password2, 12);
   user.passwordChangedAt = /* @__PURE__ */ new Date();
   await user.save();
@@ -632,20 +789,31 @@ authRouter.patch("/change-password", authenticate, validateBody(changePasswordSc
 
 // server/src/routes/progress.ts
 import { Router as Router2 } from "express";
+import { Types } from "mongoose";
+
+// server/src/models/LessonNote.ts
+import { Schema as Schema3, model as model3 } from "mongoose";
+var lessonNoteSchema = new Schema3({
+  userId: { type: Schema3.Types.ObjectId, ref: "User", required: true },
+  lessonSlug: { type: String, required: true, trim: true, maxlength: 120 },
+  content: { type: String, required: true, maxlength: 2e4 }
+}, { timestamps: true });
+lessonNoteSchema.index({ userId: 1, lessonSlug: 1 }, { unique: true });
+var LessonNote = model3("LessonNote", lessonNoteSchema);
 
 // server/src/models/Bookmark.ts
-import { Schema as Schema3, model as model3 } from "mongoose";
-var bookmarkSchema = new Schema3({
-  userId: { type: Schema3.Types.ObjectId, ref: "User", required: true },
+import { Schema as Schema4, model as model4 } from "mongoose";
+var bookmarkSchema = new Schema4({
+  userId: { type: Schema4.Types.ObjectId, ref: "User", required: true },
   lessonSlug: { type: String, required: true, trim: true, maxlength: 120 }
 }, { timestamps: { createdAt: true, updatedAt: false } });
 bookmarkSchema.index({ userId: 1, lessonSlug: 1 }, { unique: true });
-var Bookmark = model3("Bookmark", bookmarkSchema);
+var Bookmark = model4("Bookmark", bookmarkSchema);
 
 // server/src/models/LessonProgress.ts
-import { Schema as Schema4, model as model4 } from "mongoose";
-var lessonProgressSchema = new Schema4({
-  userId: { type: Schema4.Types.ObjectId, ref: "User", required: true },
+import { Schema as Schema5, model as model5 } from "mongoose";
+var lessonProgressSchema = new Schema5({
+  userId: { type: Schema5.Types.ObjectId, ref: "User", required: true },
   lessonSlug: { type: String, required: true, trim: true, maxlength: 120 },
   isCompleted: { type: Boolean, default: false },
   completedAt: { type: Date, default: null },
@@ -654,12 +822,12 @@ var lessonProgressSchema = new Schema4({
 }, { timestamps: true });
 lessonProgressSchema.index({ userId: 1, lessonSlug: 1 }, { unique: true });
 lessonProgressSchema.index({ userId: 1, lastAccessedAt: -1 });
-var LessonProgress = model4("LessonProgress", lessonProgressSchema);
+var LessonProgress = model5("LessonProgress", lessonProgressSchema);
 
 // server/src/models/QuizAttempt.ts
-import { Schema as Schema5, model as model5 } from "mongoose";
-var quizAttemptSchema2 = new Schema5({
-  userId: { type: Schema5.Types.ObjectId, ref: "User", required: true },
+import { Schema as Schema6, model as model6 } from "mongoose";
+var quizAttemptSchema2 = new Schema6({
+  userId: { type: Schema6.Types.ObjectId, ref: "User", required: true },
   lessonSlug: { type: String, required: true, trim: true, maxlength: 120 },
   score: { type: Number, required: true, min: 0, validate: Number.isInteger },
   totalQuestions: { type: Number, required: true, min: 1, validate: Number.isInteger },
@@ -669,9 +837,742 @@ quizAttemptSchema2.pre("validate", function() {
   if (this.score > this.totalQuestions) this.invalidate("score", "Score cannot exceed total questions");
 });
 quizAttemptSchema2.index({ userId: 1, lessonSlug: 1, attemptedAt: -1 });
-var QuizAttempt = model5("QuizAttempt", quizAttemptSchema2);
+var QuizAttempt = model6("QuizAttempt", quizAttemptSchema2);
 
-// server/src/content/deepLearningLessons.ts
+// src/content/appliedLessons.ts
+var py = String.raw;
+var supervisedLessons = [
+  {
+    slug: "logistic-regression",
+    title: "Logistic regression: predicting a probability",
+    description: "Squash a linear score into a probability, then decide what to do with it. The most useful classifier to understand first.",
+    module: "Supervised learning",
+    difficulty: "Beginner",
+    estimatedMinutes: 16,
+    prerequisites: ["linear-regression"],
+    objectives: ["Turn a linear score into a probability with the sigmoid.", "Calculate log loss by hand and explain why it punishes confident errors.", "Separate the model\u2019s probability from the threshold used to act on it."],
+    analogy: "Imagine a judge scoring evidence. Each clue adds or subtracts points, and the total can be any number. To be useful, the judge converts that total into a statement like \u201CI am 88% sure.\u201D Logistic regression is that conversion: a running score, then a dial that maps any score into a value between 0 and 1.",
+    intro: "Linear regression can predict 1.7 or \u22120.4, which makes no sense as a chance of passing an exam. Logistic regression keeps the same weighted sum but feeds it through the sigmoid function, which always returns a value between 0 and 1. Despite the name, it is a classification method. It is fast, easy to inspect, and a strong baseline: if a complex model cannot beat it, the complexity has not earned its place.",
+    sections: [
+      { title: "From score to probability", kicker: "THE SIGMOID", body: "First compute a score z = wx + b, also called a logit. The sigmoid \u03C3(z) = 1 / (1 + e\u207B\u1DBB) maps it into (0, 1). At z = 0 the output is exactly 0.5. Large positive scores approach 1 and large negative scores approach 0. The curve is steepest near zero, so examples near the boundary are the most sensitive to small changes in the score.", example: "Let w = 1.5 and b = \u22124. For x = 2, z = 1.5(2) \u2212 4 = \u22121 and \u03C3(\u22121) \u2248 0.269. For x = 4, z = 1.5(4) \u2212 4 = 2 and \u03C3(2) \u2248 0.881. The same one-step formula produces a low probability for the first student and a high probability for the second." },
+      { title: "Why not mean squared error?", kicker: "LOG LOSS", body: "Classification is trained with log loss, also called binary cross-entropy. For one example, the loss is \u2212ln(p) when the true label is 1 and \u2212ln(1 \u2212 p) when the true label is 0. A confident correct answer costs almost nothing, and a confident wrong answer costs a lot. Combined with the sigmoid, this loss is convex in the weights, so gradient descent has no bad local minima to get stuck in.", example: "Suppose p = 0.881. If the true label is 1, the loss is \u2212ln(0.881) \u2248 0.127. If the true label is 0, the loss is \u2212ln(1 \u2212 0.881) = \u2212ln(0.119) \u2248 2.13. The confident mistake costs about seventeen times more than the correct answer earns.", points: ["Loss near 0 means a confident, correct prediction.", "A prediction of 0.5 costs ln 2 \u2248 0.693 whichever label is true, a useful \u201Cknows nothing\u201D reference for balanced classes.", "Regularization is usually on by default; scikit-learn\u2019s `C` is the inverse of its strength."] },
+      { title: "Reading the weights", kicker: "ODDS AND LOG-ODDS", body: "The score z is the log of the odds: z = ln(p / (1 \u2212 p)). So increasing x by one unit adds w to the log-odds, which multiplies the odds by e\u02B7. With w = 1.5, each extra unit multiplies the odds by about 4.48. It does not add a fixed amount to the probability: the same step changes probability a lot near 0.5 and very little near 0 or 1.", points: ["A positive weight pushes toward class 1; a negative weight pushes toward class 0.", "Compare weights only after putting features on comparable scales.", "Correlated features can share or swap weight, so a coefficient is not a causal effect."] },
+      { title: "Probability first, decision second", kicker: "THE THRESHOLD", body: "The model outputs a probability. Turning that into an action is a separate choice. The 0.5 default is only sensible when both kinds of mistake cost the same and classes are balanced. For cancer screening you might flag anything above 0.1, and for an expensive manual review you might require 0.9. Because the boundary sits where z = 0, one feature gives one cut point, x = \u2212b / w, and several features give a flat hyperplane. If the real boundary is curved, add features or use another model.", kind: "math", example: "With w = 1.5 and b = \u22124, the 0.5 boundary is x = 4 / 1.5 \u2248 2.67. Raising the threshold to 0.9 requires z = ln(0.9 / 0.1) \u2248 2.2, so x \u2248 (2.2 + 4) / 1.5 \u2248 4.13." }
+    ],
+    formula: "p = \\sigma(wx+b) = \\frac{1}{1+e^{-(wx+b)}} \\qquad L = -\\big[y\\ln p + (1-y)\\ln(1-p)\\big]",
+    formulaExplanation: "The first expression converts a linear score into a probability. The second is the log loss for one example: when y = 1 only the \u2212ln p term remains, and when y = 0 only \u2212ln(1 \u2212 p) remains. Training averages L across examples and minimizes it.",
+    code: py`import numpy as np
+from sklearn.linear_model import LogisticRegression
+
+# Hours studied and whether each student passed (1) or not (0)
+hours = np.array([[0.5], [1.0], [1.5], [2.0], [2.5], [3.0], [3.5], [4.0], [4.5], [5.0]])
+passed = np.array([0, 0, 0, 0, 1, 0, 1, 1, 1, 1])
+
+model = LogisticRegression().fit(hours, passed)
+print(f"weight={model.coef_[0][0]:.2f}, bias={model.intercept_[0]:.2f}")
+
+# predict_proba returns [P(class 0), P(class 1)] for each row
+for h in (1.0, 2.5, 4.5):
+    probability = model.predict_proba([[h]])[0][1]
+    print(f"{h} hours -> P(pass)={probability:.2f}, label={int(probability >= 0.5)}")
+
+# The decision boundary is where the score is zero
+boundary = -model.intercept_[0] / model.coef_[0][0]
+print(f"decision boundary at {boundary:.2f} hours")`,
+    codeOutput: "weight=1.22, bias=-3.37\n1.0 hours -> P(pass)=0.11, label=0\n2.5 hours -> P(pass)=0.42, label=0\n4.5 hours -> P(pass)=0.89, label=1\ndecision boundary at 2.75 hours",
+    codeExplanation: "`predict_proba` returns one column per class, so `[0][1]` means first row, probability of class 1. The boundary formula \u2212b / w comes from setting the score to zero. The fitted weight is smaller than the hand example\u2019s because scikit-learn applies L2 regularization by default, which shrinks weights. Pass a larger `C` to weaken it. Use `predict_proba` and your own threshold when the costs of errors differ.",
+    practice: [
+      { prompt: "With w = 2 and b = \u22126, what is the probability at x = 3, and at x = 4?", answer: "0.5 at x = 3 and about 0.881 at x = 4.", solution: "At x = 3, z = 2(3) \u2212 6 = 0 and \u03C3(0) = 0.5, so x = 3 is on the boundary. At x = 4, z = 2(4) \u2212 6 = 2 and \u03C3(2) = 1 / (1 + e\u207B\xB2) \u2248 0.881." },
+      { prompt: "A model predicts p = 0.9. Calculate log loss if the true label is 1, then if it is 0.", answer: "About 0.105 for label 1 and about 2.303 for label 0.", solution: "For y = 1, loss = \u2212ln(0.9) \u2248 0.105. For y = 0, loss = \u2212ln(1 \u2212 0.9) = \u2212ln(0.1) \u2248 2.303. The wrong-but-confident case costs about 22 times more." },
+      { prompt: "A feature has weight 0.7. How does a one-unit increase change the odds? Does it add a fixed amount to the probability?", answer: "It multiplies the odds by about 2.01; it does not add a fixed probability.", solution: "The score is the log-odds, so adding 0.7 multiplies the odds by e^0.7 \u2248 2.01. Going from odds 1:1 to about 2:1 moves probability from 0.5 to about 0.67, while going from odds 9:1 to about 18:1 only moves it from 0.9 to about 0.95." }
+    ],
+    quiz: { question: "Why does logistic regression use a sigmoid on its linear score?", options: ["To make training slower and more careful", "To map any real-valued score to a value between 0 and 1", "To remove the need for labels"], answer: 1, explanation: "B is correct: a weighted sum can be any real number, and the sigmoid maps it into (0, 1) so it can be read as a probability. A is wrong because the sigmoid is about output range, not speed. C is wrong because logistic regression is supervised and needs labels to compute log loss." },
+    takeaways: ["Logistic regression is a linear score passed through a sigmoid to produce a probability.", "Log loss punishes confident mistakes far more than it rewards confident correct answers.", "The probability and the decision threshold are separate choices, and the threshold should reflect error costs."],
+    interview: { question: "Why is logistic regression called \u201Cregression\u201D if it does classification?", answer: "It regresses the log-odds of the positive class as a linear function of the features, so the model itself predicts a continuous quantity. It only becomes a classifier when you apply a threshold to the resulting probability." },
+    related: ["linear-regression", "evaluation-metrics", "gradient-descent"],
+    miniProject: { title: "Build a calibrated screening model", objective: "Train a logistic regression and pick a threshold from stated costs instead of accepting 0.5.", tasks: ["Load the breast cancer dataset with `sklearn.datasets.load_breast_cancer` and split off a test set.", "Fit a pipeline of `StandardScaler` and `LogisticRegression` on the training data.", "On validation data, compute precision and recall at thresholds 0.1, 0.3, 0.5, 0.7, and 0.9.", "Choose a threshold assuming a missed case costs ten times a false alarm, then report once on the test set."], extension: "Plot a calibration curve with `CalibrationDisplay` and describe where the predicted probabilities can and cannot be trusted." }
+  },
+  {
+    slug: "decision-trees-and-ensembles",
+    title: "Decision trees, random forests, and boosting",
+    description: "A tree asks a series of yes/no questions. Combine hundreds of them and you get some of the best models for tabular data.",
+    module: "Supervised learning",
+    difficulty: "Intermediate",
+    estimatedMinutes: 18,
+    prerequisites: ["supervised-vs-unsupervised", "train-validation-test"],
+    objectives: ["Calculate Gini impurity and the gain of a split by hand.", "Explain why a single deep tree overfits.", "Contrast bagging and boosting and choose one for a tabular problem."],
+    analogy: "A single tree is one doctor following a flowchart: easy to follow, but a flowchart built from a few past patients can be oddly specific. A random forest asks hundreds of doctors who each trained on different patients and take a vote. Boosting works like a team passing a case along, where each specialist focuses on what the previous ones got wrong.",
+    intro: "A decision tree predicts by asking one question at a time, such as \u201Cis income above 40,000?\u201D, and following the answer to a leaf. Trees need no feature scaling, handle mixed feature types, and capture interactions automatically. Alone they are unstable and easily overfit. Ensembles fix that by combining many trees, and on tabular data they remain a first choice that deep learning often fails to beat.",
+    sections: [
+      { title: "How a split is chosen", kicker: "GINI IMPURITY", body: "At each node the algorithm tries candidate questions and keeps the one that makes the resulting groups most pure. Gini impurity measures how mixed a group is: 1 minus the sum of squared class shares. A pure group has Gini 0, and a 50/50 binary group has Gini 0.5. The value of a split is the parent\u2019s impurity minus the size-weighted impurity of its children.", example: "A node has 6 positive and 4 negative examples: Gini = 1 \u2212 0.6\xB2 \u2212 0.4\xB2 = 0.48. A split produces a left child with 4 positive and 1 negative (Gini = 1 \u2212 0.8\xB2 \u2212 0.2\xB2 = 0.32) and a right child with 2 positive and 3 negative (Gini = 1 \u2212 0.4\xB2 \u2212 0.6\xB2 = 0.48). Weighted impurity = 0.5(0.32) + 0.5(0.48) = 0.40. The gain is 0.48 \u2212 0.40 = 0.08." },
+      { title: "Why one deep tree overfits", kicker: "HIGH VARIANCE", body: "Left unconstrained, a tree keeps splitting until every leaf is pure, memorizing noise along the way. It is also unstable: a small change in the data can change the first split and therefore everything below it. Limit `max_depth` and `min_samples_leaf` to regularize, and use cross-validation to choose them. A shallow tree is easy to explain, which can matter more than a few points of accuracy.", points: ["Trees are invariant to monotonic feature scaling, so standardization changes nothing.", "Boundaries are axis-aligned, so a diagonal boundary needs many small steps.", "Trees cannot extrapolate: a regression tree never predicts outside the range of its training targets."] },
+      { title: "Bagging: many independent trees", kicker: "RANDOM FORESTS", body: "A random forest trains each tree on a bootstrap sample (rows drawn with replacement) and considers only a random subset of features at each split. The randomness makes trees disagree, and averaging predictions from models that make different mistakes cancels much of their variance without much added bias. Adding more trees does not cause overfitting; it just stops helping eventually. Forests work well with little tuning, which makes them a strong default.", points: ["Each tree is grown deep; averaging handles the variance.", "Rows left out of a bootstrap sample give an \u201Cout-of-bag\u201D estimate of performance.", "Trees train independently, so training parallelizes easily."] },
+      { title: "Boosting: trees that correct each other", kicker: "GRADIENT BOOSTING", body: "Boosting builds shallow trees one after another. Each new tree fits the errors (specifically, the negative gradient of the loss) of the ensemble so far, and its contribution is shrunk by a learning rate. Bagging mainly reduces variance; boosting mainly reduces bias. Boosting often reaches the highest accuracy on tabular data, but more trees can overfit, so tune the learning rate and use early stopping on a validation set. XGBoost, LightGBM, and CatBoost are the common implementations.", kind: "math", example: "Suppose the true value is 10 and the first tree predicts 7, leaving a residual of 3. With learning rate 0.1, a second tree that predicts that residual exactly moves the ensemble to 7 + 0.1(3) = 7.3. Many small corrections generalize better than one large one." }
+    ],
+    formula: "\\text{Gini} = 1-\\sum_{k} p_k^2 \\qquad F_{m}(x) = F_{m-1}(x) + \\eta\\, h_m(x)",
+    formulaExplanation: "p\u2096 is the share of class k in a node, so a pure node scores 0. The second expression is the boosting update: the current ensemble F\u2098\u208B\u2081 gains a new tree h\u2098, shrunk by the learning rate \u03B7. A random forest instead averages independently trained trees.",
+    code: py`from sklearn.datasets import make_moons
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.model_selection import cross_val_score
+from sklearn.tree import DecisionTreeClassifier
+
+features, labels = make_moons(n_samples=400, noise=0.3, random_state=7)
+
+candidates = {
+    "single tree, unlimited": DecisionTreeClassifier(random_state=7),
+    "single tree, depth 3": DecisionTreeClassifier(max_depth=3, random_state=7),
+    "random forest": RandomForestClassifier(n_estimators=200, random_state=7),
+    "gradient boosting": GradientBoostingClassifier(random_state=7),
+}
+
+# Five-fold cross-validation scores each model on data it did not fit
+for name, model in candidates.items():
+    scores = cross_val_score(model, features, labels, cv=5)
+    print(f"{name}: {scores.mean():.3f} +/- {scores.std():.3f}")`,
+    codeOutput: "single tree, unlimited: 0.870 +/- 0.023\nsingle tree, depth 3: 0.905 +/- 0.039\nrandom forest: 0.915 +/- 0.022\ngradient boosting: 0.905 +/- 0.034",
+    codeExplanation: "The unlimited tree memorizes its training folds and scores lowest. Limiting depth helps. The forest scores highest here and with lower spread across folds, which shows its stability. The gaps are close to the fold-to-fold variation, so do not conclude that forests always beat boosting: on this small, simple dataset boosting has little left to correct, and it usually needs tuning to show its advantage.",
+    practice: [
+      { prompt: "A node holds 8 positive and 2 negative examples. What is its Gini impurity?", answer: "0.32.", solution: "The shares are 0.8 and 0.2. Gini = 1 \u2212 0.8\xB2 \u2212 0.2\xB2 = 1 \u2212 0.64 \u2212 0.04 = 0.32." },
+      { prompt: "A parent with 10 examples has Gini 0.5. A split gives 4 examples with Gini 0 and 6 examples with Gini 0.444. What is the gain?", answer: "About 0.233.", solution: "Weighted child impurity = (4/10)(0) + (6/10)(0.444) \u2248 0.267. The gain is 0.5 \u2212 0.267 \u2248 0.233." },
+      { prompt: "Your training accuracy is 99% and validation accuracy is 78% on a boosted model. Name two changes you would try.", answer: "Lower the learning rate with early stopping, and use shallower trees or fewer trees.", solution: "The gap signals overfitting. Reduce the learning rate and let early stopping choose the tree count, limit tree depth, or subsample rows and features per tree. Also check for leakage and duplicates across splits before blaming complexity." }
+    ],
+    quiz: { question: "What is the main difference between bagging and boosting?", options: ["Bagging trains trees independently and averages them; boosting trains them in sequence to correct earlier errors", "Bagging only works on images; boosting only works on text", "Bagging uses one tree; boosting uses many"], answer: 0, explanation: "A is correct. Bagging, as in random forests, mainly reduces variance by averaging independent trees. Boosting mainly reduces bias by fitting each tree to the remaining errors. B is wrong because both are mostly used on tabular data. C is wrong because both use many trees." },
+    takeaways: ["Trees split to reduce impurity, need no scaling, and overfit easily when left unconstrained.", "Random forests average many decorrelated trees and work well with little tuning.", "Boosting fits trees in sequence and often leads on tabular data, but needs a validation set to control it."],
+    interview: { question: "When would you pick gradient boosting over a neural network?", answer: "For most tabular problems with heterogeneous features and modest data, where boosted trees are usually accurate, quick to train, and tolerant of unscaled inputs. I would reach for neural networks with images, audio, or text, or when I need to learn representations from raw data at large scale." },
+    related: ["overfitting-underfitting", "feature-engineering-and-pipelines", "evaluation-metrics"],
+    miniProject: { title: "Tree, forest, or boosting?", objective: "Compare the three approaches on a real tabular dataset with a fair evaluation.", tasks: ["Load `sklearn.datasets.fetch_california_housing` and hold out a test set.", "Cross-validate a depth-limited tree, a random forest, and `HistGradientBoostingRegressor` using RMSE.", "Plot permutation importance for your best model.", "Report the test score once and write three sentences on what you would explain to a stakeholder."], extension: "Add early stopping to the boosted model and chart validation loss against the number of trees." }
+  },
+  {
+    slug: "feature-engineering-and-pipelines",
+    title: "Feature engineering and leak-proof pipelines",
+    description: "Real data has gaps, categories, and awkward scales. Pipelines make your preparation repeatable and keep test data out of it.",
+    module: "Supervised learning",
+    difficulty: "Intermediate",
+    estimatedMinutes: 15,
+    prerequisites: ["train-validation-test", "linear-regression"],
+    objectives: ["Choose encodings for numeric, categorical, and date features.", "Handle missing values without leaking test information.", "Package preparation and model into one object that fits, predicts, and deploys together."],
+    analogy: "Think of a restaurant kitchen. Ingredients arrive in different states: some muddy, some frozen, some missing. A good kitchen has a written prep routine, applied identically every night. If a chef tastes tomorrow\u2019s delivery before writing tonight\u2019s recipe, the recipe is not a fair test. A pipeline is the written routine, and the rule against tasting ahead is what prevents leakage.",
+    intro: "Models see numbers, not spreadsheets. Feature engineering turns raw columns into inputs that make the pattern easier to learn, and it often changes results more than swapping algorithms. The risk is that preparation steps also learn from data: an imputer learns a median and a scaler learns a mean. If those steps see validation or test rows, your evaluation is contaminated. Pipelines solve this by treating preparation as part of the model.",
+    sections: [
+      { title: "Numbers: scale and shape", kicker: "NUMERIC FEATURES", body: "Distance-based models and gradient-trained models are sensitive to scale, so standardize them: subtract the training mean and divide by the training standard deviation. Trees do not care. Skewed values such as income often behave better after a log transform. Ratios and differences can express what a model struggles to construct alone, such as debt divided by income.", example: "If training ages have mean 40 and standard deviation 10, a 55-year-old becomes (55 \u2212 40) / 10 = 1.5. A test row must use those same training values, never its own mean." },
+      { title: "Categories: encode with care", kicker: "CATEGORICAL FEATURES", body: "One-hot encoding creates a 0/1 column per category. It is safe and simple, but it grows with the number of categories. Do not assign 1, 2, 3 to unordered categories, because that invents an ordering a linear model will take literally. Target encoding replaces a category with its average target, which handles many categories but leaks badly unless it is computed out-of-fold.", points: ['Set `handle_unknown="ignore"` so a new category in production does not crash prediction.', "Group rare categories together so they do not become noisy columns.", "Dates hide useful parts: day of week, month, and time since an event."] },
+      { title: "Missing values are information", kicker: "IMPUTATION", body: "Most models cannot accept gaps, so fill them with a median or most-frequent value learned from training data. First ask why a value is missing, because the reason can predict the target: a blank \u201Clast purchase date\u201D may mean a brand-new customer. Add a missing-indicator column to keep that signal. Dropping rows is simple, but it shrinks your data and can bias it when missingness is not random.", points: ["Random gaps: simple imputation is usually fine.", "Gaps related to the target: keep an indicator column.", "Fit the imputer inside the training fold, never on the full dataset."] },
+      { title: "Why pipelines prevent leakage", kicker: "ONE OBJECT, ONE BOUNDARY", body: "A pipeline chains preparation and model into a single estimator. Calling `fit` learns every step from training rows only, and `predict` applies them unchanged. `cross_val_score` then refits the entire chain inside each fold, which is exactly what manual preprocessing tends to get wrong. A `ColumnTransformer` routes different columns to different steps. Save the fitted pipeline, and your deployed model cannot drift out of sync with its preprocessing.", kind: "math", example: "A common mistake: scale all rows, then cross-validate. Each fold\u2019s validation rows have already influenced the mean and standard deviation. The effect on scaling is often small, but the same mistake with feature selection on wide data can turn pure noise into impressive-looking scores." }
+    ],
+    formula: "x_{\\text{scaled}} = \\frac{x - \\mu_{\\text{train}}}{\\sigma_{\\text{train}}}",
+    formulaExplanation: "The mean \u03BC and standard deviation \u03C3 come only from training rows and are reused unchanged for validation, test, and production data. Using anything else lets future information shape the model.",
+    code: py`import numpy as np
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+# A small synthetic table with missing values in both kinds of column
+rng = np.random.default_rng(7)
+n = 200
+tenure = rng.integers(1, 60, n).astype(float)
+plan = rng.choice(["basic", "plus", "pro"], n).astype(object)
+churned = (tenure + rng.normal(0, 8, n) < 18).astype(int)
+tenure[::20] = np.nan
+plan[::25] = np.nan
+table = pd.DataFrame({"tenure_months": tenure, "plan": plan})
+
+numeric = Pipeline([
+    ("impute", SimpleImputer(strategy="median")),
+    ("scale", StandardScaler()),
+])
+categorical = Pipeline([
+    ("impute", SimpleImputer(strategy="most_frequent")),
+    ("encode", OneHotEncoder(handle_unknown="ignore")),
+])
+prepare = ColumnTransformer([
+    ("numeric", numeric, ["tenure_months"]),
+    ("categorical", categorical, ["plan"]),
+])
+model = Pipeline([("prepare", prepare), ("classify", LogisticRegression())])
+
+# Every fold refits the imputers, scaler, and encoder on its own training rows
+scores = cross_val_score(model, table, churned, cv=5)
+print(f"cross-validated accuracy: {scores.mean():.2f}")
+
+model.fit(table, churned)
+print("columns after preparation:", model.named_steps["prepare"].get_feature_names_out().tolist())
+new_customer = pd.DataFrame({"tenure_months": [3.0], "plan": ["enterprise"]})
+print(f"unseen plan, P(churn)={model.predict_proba(new_customer)[0][1]:.2f}")`,
+    codeOutput: "cross-validated accuracy: 0.89\ncolumns after preparation: ['numeric__tenure_months', 'categorical__plan_basic', 'categorical__plan_plus', 'categorical__plan_pro']\nunseen plan, P(churn)=0.93",
+    codeExplanation: 'Each column type gets its own preparation path, and all of it lives inside `model`. Passing the whole pipeline to `cross_val_score` means no fold ever sees statistics from its validation rows. The final lines show the production benefit: the plan \u201Centerprise\u201D never appeared in training, and `handle_unknown="ignore"` encodes it as all zeros instead of raising an error. Save this single `model` object and you deploy preprocessing and weights together.',
+    practice: [
+      { prompt: "Training ages have mean 40 and standard deviation 10. A test row has age 25. What is its scaled value?", answer: "\u22121.5.", solution: "(25 \u2212 40) / 10 = \u22121.5. Use the training mean and standard deviation, even if the test set\u2019s own statistics differ." },
+      { prompt: "A \u201Ccolor\u201D column has values red, green, and blue. Why is encoding them as 1, 2, 3 risky for linear regression?", answer: "It invents an order and equal spacing that do not exist.", solution: "A linear model gives this column one weight, so it must treat blue as exactly three times red and green as exactly between them. One-hot encoding gives each color its own weight. Tree models tolerate integer codes better, because they can split at any point, but the codes still carry no real meaning." },
+      { prompt: "You select the 20 best features using all rows, then cross-validate. Scores look great. What went wrong, and how do you fix it?", answer: "Feature selection saw the validation rows. Put it inside the pipeline.", solution: "Selecting by correlation with the target over every row uses validation labels. With many columns, some noise columns will correlate by chance, and scores become inflated. Add `SelectKBest` as a pipeline step so selection is redone within each training fold." }
+    ],
+    quiz: { question: "What is the main reason to put a scaler inside a pipeline before cross-validating?", options: ["It makes the model train faster", "The scaler is refit on each fold\u2019s training rows, so validation rows do not influence it", "Pipelines remove the need for a test set"], answer: 1, explanation: "B is correct: the pipeline keeps learned preprocessing inside the training boundary of each fold. A is not the purpose. C is wrong because you still need an untouched test set for a final estimate after model selection." },
+    takeaways: ["Good features often improve results more than a fancier algorithm.", "Imputers, scalers, encoders, and selectors learn from data, so they belong inside the training boundary.", "A pipeline makes the same preparation run in training, cross-validation, and production."],
+    interview: { question: "What is target leakage and how have you seen it happen?", answer: "It occurs when a feature contains information that would not be available at prediction time, usually because it is recorded after the outcome. A \u201Ctreatment given\u201D column in a disease model is the classic case. It produces excellent offline scores and fails in production. I look for suspiciously strong features and check when each one is recorded." },
+    related: ["train-validation-test", "decision-trees-and-ensembles", "serving-models"],
+    miniProject: { title: "Rebuild a messy notebook as one pipeline", objective: "Turn ad-hoc preprocessing on a public dataset into a single leak-proof, deployable object.", tasks: ['Load the Titanic data with `fetch_openml("titanic", version=1)`, dropping columns that leak the outcome such as `boat` and `body`.', "Build a `ColumnTransformer` with separate numeric and categorical paths.", "Compare logistic regression and a random forest using cross-validation over the whole pipeline.", "Save the best pipeline with `joblib`, reload it, and predict on a hand-written row."], extension: "Add a missing-indicator with `SimpleImputer(add_indicator=True)` and test whether it improves the score." }
+  }
+];
+var visionLessons = [
+  {
+    slug: "image-data-and-augmentation",
+    title: "Image data: tensors, normalization, and augmentation",
+    description: "What a picture looks like to a model, and how to create useful training variety without collecting more photos.",
+    module: "Computer vision",
+    difficulty: "Intermediate",
+    estimatedMinutes: 15,
+    prerequisites: ["convolutional-neural-networks"],
+    objectives: ["Read an image tensor\u2019s shape and data type.", "Normalize a pixel by hand using channel statistics.", "Choose augmentations that keep the label true."],
+    analogy: "If you only ever saw a coffee mug from the front in bright light, you might not recognize it from the side at dusk. Children see objects from countless angles, so they learn what stays the same. Augmentation shows a model the same object in varied conditions, which teaches it which changes do not matter.",
+    intro: "To a model, an image is a grid of numbers. Before any architecture matters, you need those numbers in the shape and range the model expects, and you need enough variety that the model learns the object instead of the background. Vision bugs are often data bugs: swapped channels, wrong normalization, or augmentations that quietly change the correct answer.",
+    sections: [
+      { title: "An image is a tensor", kicker: "SHAPE AND RANGE", body: "A color image has height, width, and three channels. PyTorch uses (channels, height, width), and a batch adds a leading dimension: (batch, channels, height, width). Many image libraries and TensorFlow default to channels last instead, and OpenCV loads colors as BGR rather than RGB. Raw pixels are usually 8-bit integers from 0 to 255, and models train on floats.", example: "A batch of 8 RGB images at 224 \xD7 224 has shape (8, 3, 224, 224), which is 8 \xD7 3 \xD7 224 \xD7 224 = 1,204,224 values. Doubling the side length to 448 quadruples that count, and with it the memory and compute that convolutions need." },
+      { title: "Normalize the way training did", kicker: "CHANNEL STATISTICS", body: "Pixel values are divided by 255, then each channel has its mean subtracted and is divided by its standard deviation. A pretrained model expects the statistics it was trained with. For ImageNet those are the widely used means [0.485, 0.456, 0.406] and standard deviations [0.229, 0.224, 0.225]. Skipping or changing this step usually does not raise an error; accuracy just quietly drops.", example: "A red-channel pixel of 128 becomes 128 / 255 \u2248 0.502, then (0.502 \u2212 0.485) / 0.229 \u2248 0.074. A pixel of 255 becomes (1.0 \u2212 0.485) / 0.229 \u2248 2.25." },
+      { title: "Augment without changing the answer", kicker: "LABEL-PRESERVING VARIETY", body: "Augmentation randomly transforms training images so the model sees fresh versions each epoch. It works as regularization by encoding what should not matter. The key question is whether the transformation keeps the label true. Flipping a cat is still a cat, but flipping a \u201C6\u201D can look like a different digit, and flipping a chest X-ray swaps the side the heart appears on, which can be clinically meaningful.", points: ["Geometric: flips, small rotations, random crops.", "Photometric: brightness, contrast, color jitter.", "Mixing: Cutout, MixUp, and CutMix, which also change the label or hide regions.", "For detection and segmentation, transform the boxes or masks too."] },
+      { title: "Keep evaluation honest", kicker: "DATA SPLITS FOR IMAGES", body: "Apply random augmentation only to training data. Validation and test images get only deterministic steps, such as a resize, center crop, and normalization. Split before augmenting, and split by source: photos from one patient, camera, or video must stay on one side, because near-duplicates across splits inflate scores. Also look at your images after preprocessing. Plotting one batch finds channel and normalization bugs in seconds.", kind: "math", points: ["Train: random augmentations plus normalization.", "Validation and test: deterministic resize plus the same normalization.", "Group splits: keep frames from one video or scans from one patient together."] }
+    ],
+    formula: "x_{\\text{norm}} = \\frac{x/255 - \\mu_c}{\\sigma_c}",
+    formulaExplanation: "x is a raw pixel from 0 to 255, and \u03BC_c and \u03C3_c are the mean and standard deviation of its channel c, computed on the training set or inherited from the pretrained model. The same values are applied to every image, in every split.",
+    code: py`import torch
+
+torch.manual_seed(7)
+
+# A fake batch: 8 RGB images of 32x32 pixels with values from 0 to 255
+images = torch.randint(0, 256, (8, 3, 32, 32), dtype=torch.uint8)
+print("raw:", images.shape, images.dtype)
+
+# Scale to 0-1, then normalize each channel
+scaled = images.float() / 255
+mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+normalized = (scaled - mean) / std
+print("normalized:", normalized.shape, normalized.dtype)
+
+# One pixel value worked through the red channel
+pixel = torch.tensor(128 / 255)
+print("128 in the red channel becomes", round(((pixel - 0.485) / 0.229).item(), 4))
+
+# Horizontal flip reverses the width dimension and keeps the shape
+flipped = torch.flip(normalized, dims=[3])
+print("flip keeps shape:", flipped.shape == normalized.shape)
+print("first row matches reversed:", torch.equal(flipped[0, 0, 0], normalized[0, 0, 0].flip(0)))`,
+    codeOutput: "raw: torch.Size([8, 3, 32, 32]) torch.uint8\nnormalized: torch.Size([8, 3, 32, 32]) torch.float32\n128 in the red channel becomes 0.0741\nflip keeps shape: True\nfirst row matches reversed: True",
+    codeExplanation: "The `view(1, 3, 1, 1)` reshape lets one mean per channel broadcast across the batch, height, and width dimensions. Converting to float before dividing matters, because integer arithmetic would lose the fractions. The flip works on dimension 3, the width, because the layout is (batch, channels, height, width). In a real project, use `torchvision.transforms.v2` or Albumentations rather than writing these by hand.",
+    practice: [
+      { prompt: "What is the shape of a batch of 16 grayscale images of 28 \xD7 28 in PyTorch, and how many values does it contain?", answer: "Shape (16, 1, 28, 28), containing 12,544 values.", solution: "Grayscale has one channel. The total is 16 \xD7 1 \xD7 28 \xD7 28 = 12,544 values. The channel dimension stays even at size 1, because convolution layers expect it." },
+      { prompt: "Normalize a pixel value of 51 using mean 0.5 and standard deviation 0.25.", answer: "\u22121.2.", solution: "51 / 255 = 0.2. Then (0.2 \u2212 0.5) / 0.25 = \u22121.2." },
+      { prompt: "You are classifying handwritten digits. Which of these are safe: small rotation, horizontal flip, slight blur?", answer: "Small rotation and slight blur are safe; a horizontal flip is not.", solution: "A slight rotation or blur leaves a digit recognizable as the same digit. A horizontal flip can turn a digit into a shape that is not a valid digit, or make it resemble a different one, so it does not preserve the label." }
+    ],
+    quiz: { question: "Which pairing of data handling is correct?", options: ["Random augmentation on train, deterministic preprocessing on validation and test", "Random augmentation on all splits for fairness", "Normalization on train only"], answer: 0, explanation: "A is correct: random variety regularizes training, while evaluation needs stable, repeatable inputs. B makes the metric noisy and no longer reflects the real inputs. C is wrong because the model expects the same normalization at every stage." },
+    takeaways: ["PyTorch images use (batch, channels, height, width), and channel order bugs fail silently.", "Normalize with the statistics the model was trained on, in every split.", "An augmentation is only valid if it keeps the label true."],
+    interview: { question: "Your model scores 98% on validation and 70% in production. What do you check in the image pipeline?", answer: "I would check for a train-serving mismatch first: resizing method, normalization values, and RGB versus BGR. Then I would check for leakage from near-duplicates across splits and whether production images differ in camera, lighting, or subject. Plotting the actual tensors reaching the model is usually the quickest way to find the cause." },
+    related: ["convolutional-neural-networks", "transfer-learning", "monitoring-and-drift"],
+    miniProject: { title: "Measure what augmentation buys you", objective: "Quantify the effect of augmentation on a small dataset.", tasks: ["Take a subset of 1,000 CIFAR-10 images using `torchvision.datasets.CIFAR10`.", "Train a small CNN with normalization only and record validation accuracy per epoch.", "Retrain with random crops and horizontal flips, keeping the same seed and validation set.", "Compare the curves and the train/validation gap for both runs."], extension: "Add CutMix, and explain why its training accuracy looks worse even when validation accuracy improves." }
+  },
+  {
+    slug: "transfer-learning",
+    title: "Transfer learning: standing on a pretrained model",
+    description: "Reuse features learned on millions of images and get good results with hundreds of your own.",
+    module: "Computer vision",
+    difficulty: "Intermediate",
+    estimatedMinutes: 15,
+    prerequisites: ["image-data-and-augmentation", "optimizers"],
+    objectives: ["Explain why features learned on one task transfer to another.", "Freeze a backbone, replace the head, and count trainable parameters.", "Run a two-stage fine-tuning schedule and pick learning rates."],
+    analogy: "Someone who already plays piano can learn the organ far faster than a beginner, because they keep the reading and finger skills and only learn the pedals and stops. A pretrained network already knows how to see edges and textures. You keep those skills and teach it only what is specific to your task.",
+    intro: "Training a large vision model from scratch takes huge datasets. Transfer learning starts from a model trained on another task, usually ImageNet, and adapts it. Early layers learn general features such as edges and textures, while later layers become task-specific. By reusing the general part and retraining the end, you can get strong results with far less data, compute, and time. This is the default starting point for most applied vision work.",
+    sections: [
+      { title: "Backbone and head", kicker: "TWO PARTS OF A MODEL", body: "A classifier divides into a backbone, which turns an image into a feature vector, and a head, which turns those features into class scores. For transfer learning, you discard the original head and attach one sized for your classes. The head has very few parameters compared with the backbone, so it can be trained from a small dataset without much risk of overfitting.", example: "ResNet-50 outputs a 2,048-dimensional feature vector and has about 25.6 million parameters in total. A new linear head for 3 classes has 2048 \xD7 3 + 3 = 6,147 parameters, which is roughly 0.02% of the whole model." },
+      { title: "Stage 1: train only the head", kicker: "FREEZE THE BACKBONE", body: "Set `requires_grad = False` on backbone parameters so training leaves them untouched, and train the head for a few epochs. Do this first because the new head starts random and produces large, meaningless gradients, which would damage good pretrained weights. Batch normalization needs special care: its running statistics update in training mode even when its parameters are frozen, so keep frozen BatchNorm layers in `eval()` mode.", points: ["Pass only trainable parameters to the optimizer.", "A higher rate, such as 1e-3, is fine for a fresh head.", "If this stage alone reaches your target, you can stop here."] },
+      { title: "Stage 2: fine-tune with care", kicker: "UNFREEZE GRADUALLY", body: "Next, unfreeze some or all of the backbone and continue with a much lower learning rate, such as 1e-5 for the backbone and 1e-4 for the head. Unfreeze the last blocks first, since they are the most task-specific. Discriminative learning rates, where earlier layers move less, let the model adapt without losing what it already learned. Watch validation loss closely; a small dataset can now overfit.", kind: "math", points: ["Too high a rate here can destroy pretrained features quickly.", "Rebuild or update the optimizer after changing what is trainable.", "Use the normalization the pretrained weights expect."] },
+      { title: "How much to retrain", kicker: "A DECISION GUIDE", body: "The right approach depends on how much data you have and how similar it is to the source task. With little data and a similar domain, train the head only. With more data, fine-tune more layers. With a very different domain, such as medical scans or satellite images, the high-level features transfer less, so fine-tune deeper or look for a pretrained model from a closer domain. Check the license of pretrained weights before shipping them commercially.", example: "With 300 photos of 3 plant diseases: freeze the backbone and train the head, then evaluate. With 30,000 satellite images: fine-tune most of the network, because the domain differs and you have the data to support it." }
+    ],
+    formula: "\\theta_{\\text{backbone}} \\leftarrow \\theta_{\\text{backbone}} - \\eta_{b}\\nabla L \\qquad \\theta_{\\text{head}} \\leftarrow \\theta_{\\text{head}} - \\eta_{h}\\nabla L \\qquad \\eta_{b} \\ll \\eta_{h}",
+    formulaExplanation: "During fine-tuning, both parts learn from the same loss, but the backbone uses a much smaller learning rate. In stage one, \u03B7_b is effectively zero because the backbone is frozen.",
+    code: py`import torch
+from torch import nn
+
+torch.manual_seed(7)
+
+# Stand-in for a pretrained backbone, so this runs without downloading weights
+backbone = nn.Sequential(
+    nn.Conv2d(3, 16, kernel_size=3, padding=1),
+    nn.ReLU(),
+    nn.AdaptiveAvgPool2d(1),
+    nn.Flatten(),
+)
+head = nn.Linear(16, 3)  # new classifier for our 3 classes
+
+def count(parameters):
+    return sum(p.numel() for p in parameters if p.requires_grad)
+
+# Stage 1: freeze the backbone and train only the head
+for parameter in backbone.parameters():
+    parameter.requires_grad = False
+print("trainable while frozen:", count(backbone.parameters()) + count(head.parameters()))
+
+optimizer = torch.optim.Adam(head.parameters(), lr=1e-3)
+images = torch.randn(4, 3, 32, 32)
+targets = torch.tensor([0, 1, 2, 1])
+before = backbone[0].weight.clone()
+
+logits = head(backbone(images))
+loss = nn.functional.cross_entropy(logits, targets)
+optimizer.zero_grad()
+loss.backward()
+optimizer.step()
+print("logits shape:", logits.shape)
+print("backbone unchanged:", torch.equal(before, backbone[0].weight))
+
+# Stage 2: unfreeze and fine-tune, using a smaller rate for pretrained layers
+for parameter in backbone.parameters():
+    parameter.requires_grad = True
+optimizer = torch.optim.Adam([
+    {"params": backbone.parameters(), "lr": 1e-5},
+    {"params": head.parameters(), "lr": 1e-4},
+])
+print("trainable after unfreezing:", count(backbone.parameters()) + count(head.parameters()))`,
+    codeOutput: "trainable while frozen: 51\nlogits shape: torch.Size([4, 3])\nbackbone unchanged: True\ntrainable after unfreezing: 499",
+    codeExplanation: 'The head has 16 \xD7 3 + 3 = 51 parameters, and the convolution has 3 \xD7 16 \xD7 9 + 16 = 448. So 51 are trainable while frozen and 499 after unfreezing. The `torch.equal` check proves the frozen backbone did not move during a real training step. To use a real backbone, load `torchvision.models.resnet50(weights="DEFAULT")` and replace `model.fc`; the freezing logic is the same.',
+    practice: [
+      { prompt: "A backbone outputs 512 features and you need 10 classes. How many parameters does a linear head have?", answer: "5,130.", solution: "Weights: 512 \xD7 10 = 5,120. Biases: 10. The total is 5,130." },
+      { prompt: "You unfreeze the whole model and keep the head\u2019s learning rate of 1e-3 for everything. Validation accuracy collapses. Why, and what do you change?", answer: "The rate is too high for pretrained weights. Use a much lower backbone rate.", solution: "Good weights sit in a useful region, and large steps knock them out of it. Lower the backbone rate to around 1e-5, use a separate parameter group for the head, and consider unfreezing only the last block first." },
+      { prompt: "You have 200 labeled X-rays and an ImageNet model. Which plan do you start with, and why?", answer: "Freeze the backbone, train the head, and evaluate before fine-tuning anything.", solution: "With so few examples, training the full model would overfit quickly. Start with the head and strong evaluation by patient. If results fall short, unfreeze only the last block with a low rate, and search for weights pretrained on medical images, since the domain differs a lot from ImageNet." }
+    ],
+    quiz: { question: "Why is the head usually trained before fine-tuning the backbone?", options: ["The head starts random, and its large early gradients could damage the pretrained weights", "Backbones cannot be trained at all", "It makes the images higher resolution"], answer: 0, explanation: "A is correct: stabilizing the head first keeps early gradients from disrupting useful pretrained features. B is false, since backbones are often fine-tuned. C is unrelated to training order." },
+    takeaways: ["Early layers learn general visual features that transfer well across tasks.", "Train the new head first, then fine-tune with a much smaller learning rate.", "How much to unfreeze depends on your data size and how close your domain is to the source."],
+    interview: { question: "When would transfer learning fail or hurt?", answer: "When the source and target domains differ too much, the features may not help, which is called negative transfer. It is also weak when the input modality differs, such as multispectral channels the model has never seen. I would compare against a smaller model trained from scratch and evaluate with properly grouped splits." },
+    related: ["image-data-and-augmentation", "optimizers", "object-detection-and-segmentation"],
+    miniProject: { title: "Classify flowers with very little data", objective: "Compare training from scratch against transfer learning on a small dataset.", tasks: ["Use `torchvision.datasets.Flowers102` and keep its small official training split.", "Train a small CNN from scratch as a baseline.", "Train a `resnet18` head only, then fine-tune the last block with a lower rate.", "Compare accuracy, training time, and the number of trainable parameters."], extension: "Visualize misclassified images and try Grad-CAM to see what the model looked at." }
+  },
+  {
+    slug: "object-detection-and-segmentation",
+    title: "Object detection and segmentation",
+    description: "Go beyond naming an image: find where things are and outline them, pixel by pixel.",
+    module: "Computer vision",
+    difficulty: "Intermediate",
+    estimatedMinutes: 17,
+    prerequisites: ["convolutional-neural-networks", "evaluation-metrics"],
+    objectives: ["Calculate IoU by hand and explain how it defines a correct detection.", "Implement non-maximum suppression.", "Choose between classification, detection, and segmentation, and read mAP and Dice."],
+    analogy: "Classification answers \u201Cis there a dog in this photo?\u201D Detection draws a rectangle around each dog. Semantic segmentation colors in every dog pixel, and instance segmentation colors each dog in a different shade. Each step costs more labeling effort, so use the simplest one that answers your question.",
+    intro: "Many real tasks need location: a robot picking parts, a car avoiding pedestrians, or a radiologist measuring a tumor. Detection predicts a class and a box for each object, and segmentation predicts a class for every pixel. Both build on the convolutional backbones you already know, adding specialized heads, losses, and metrics. Their labels are also far more expensive to collect, so choosing the right task saves a lot of money.",
+    sections: [
+      { title: "Choose the right task", kicker: "THREE LEVELS OF DETAIL", body: "Classification outputs one or more labels per image. Detection outputs a box, class, and confidence for each object. Semantic segmentation outputs a class per pixel and does not separate two touching objects of the same class. Instance segmentation separates them, and panoptic segmentation combines both views. Labeling costs rise quickly, from a few seconds per image to minutes.", points: ["Counting separate items: detection or instance segmentation.", "Measuring area or shape: segmentation.", "Knowing only whether something appears: classification is enough."] },
+      { title: "IoU decides what counts as correct", kicker: "INTERSECTION OVER UNION", body: "To grade a predicted box, compare it with the true box using Intersection over Union: the overlapping area divided by the combined area. An IoU of 1 is a perfect match and 0 means no overlap. A detection counts as a true positive when its class is right and its IoU clears a threshold, commonly 0.5.", example: "Box A is (0, 0, 4, 4) and box B is (2, 2, 6, 6). The overlap is 2 \xD7 2 = 4. Each box has area 16, so the union is 16 + 16 \u2212 4 = 28, and IoU = 4 / 28 \u2248 0.143. Shifting B to (1, 1, 5, 5) gives an overlap of 9 and a union of 23, for an IoU of about 0.391." },
+      { title: "From many guesses to one per object", kicker: "DETECTOR DESIGNS AND NMS", body: "Two-stage detectors such as Faster R-CNN first propose regions, then classify them, which tends to be accurate. One-stage detectors such as YOLO predict directly over a grid, which is fast. Both typically produce many overlapping boxes per object. Non-maximum suppression (NMS) cleans these up: keep the highest-scoring box, remove boxes overlapping it above a threshold, and repeat. Transformer-based detectors such as DETR predict a set of objects directly and do not need NMS.", example: "Take three boxes with scores 0.90, 0.75, and 0.80, where the first two overlap heavily. NMS keeps the 0.90 box, removes the 0.75 box as a duplicate, and keeps the distant 0.80 box." },
+      { title: "Metrics and segmentation", kicker: "MAP AND DICE", body: "Detection is graded with mean average precision (mAP): the area under the precision-recall curve per class, then averaged across classes. COCO-style mAP also averages over IoU thresholds from 0.5 to 0.95, rewarding precise localization. Segmentation commonly uses Dice or pixel IoU rather than pixel accuracy, because a small object can be missed entirely while pixel accuracy stays high. U-Net\u2019s encoder-decoder design with skip connections, which recover fine detail, remains a standard starting point.", kind: "math", example: "If an object covers 4 pixels, a model predicts 3 pixels, and 2 of them are correct, then Dice = 2 \xD7 2 / (4 + 3) \u2248 0.571. On a 100-pixel image, a model that predicts all background gets 96% pixel accuracy on the same object, but a Dice of 0." }
+    ],
+    formula: "\\text{IoU}=\\frac{|A\\cap B|}{|A\\cup B|} \\qquad \\text{Dice}=\\frac{2|A\\cap B|}{|A|+|B|}",
+    formulaExplanation: "A and B are the predicted and true regions. Both scores run from 0 to 1. Dice gives more weight to the overlap, so it reads higher than IoU on the same prediction, unless the match is perfect or there is no overlap at all.",
+    code: py`def iou(a, b):
+    # Boxes are (x1, y1, x2, y2)
+    width = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    height = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    overlap = width * height
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return overlap / (area_a + area_b - overlap)
+
+def non_max_suppression(boxes, scores, threshold=0.5):
+    order = sorted(range(len(boxes)), key=lambda i: scores[i], reverse=True)
+    keep = []
+    while order:
+        best = order.pop(0)
+        keep.append(best)
+        order = [i for i in order if iou(boxes[best], boxes[i]) < threshold]
+    return keep
+
+print("IoU:", round(iou((0, 0, 4, 4), (2, 2, 6, 6)), 3))
+print("IoU:", round(iou((0, 0, 4, 4), (1, 1, 5, 5)), 3))
+
+boxes = [(10, 10, 50, 50), (12, 12, 52, 52), (100, 100, 140, 140)]
+scores = [0.90, 0.75, 0.80]
+print("kept box indexes:", non_max_suppression(boxes, scores))
+
+def dice(true_pixels, predicted_pixels):
+    overlap = len(true_pixels & predicted_pixels)
+    return 2 * overlap / (len(true_pixels) + len(predicted_pixels))
+
+truth = {(0, 0), (0, 1), (1, 0), (1, 1)}
+prediction = {(0, 1), (1, 1), (1, 2)}
+print("Dice:", round(dice(truth, prediction), 3))`,
+    codeOutput: "IoU: 0.143\nIoU: 0.391\nkept box indexes: [0, 2]\nDice: 0.571",
+    codeExplanation: "The `max(0, \u2026)` guards handle boxes that do not touch, where the overlap would otherwise come out as a negative width. In the NMS loop, box 1 is dropped because it overlaps box 0 heavily, while box 2 survives because it is elsewhere in the image. Note that the returned order follows the scores: 0.90, then 0.80. In real work, use `torchvision.ops.nms`, and run NMS per class so a person and a bicycle in the same spot do not cancel each other.",
+    practice: [
+      { prompt: "Calculate IoU for boxes (0, 0, 2, 2) and (1, 0, 3, 2).", answer: "1/3, or about 0.333.", solution: "The overlap runs x from 1 to 2 and y from 0 to 2, so its area is 1 \xD7 2 = 2. Each box has area 4, so the union is 4 + 4 \u2212 2 = 6. IoU = 2 / 6 \u2248 0.333." },
+      { prompt: "You lower the NMS threshold from 0.7 to 0.3. What happens in a crowded scene?", answer: "More boxes are removed, and real neighboring objects may be lost.", solution: "A lower threshold treats smaller overlaps as duplicates. In a crowd, two different people can overlap by 0.4, so a valid detection is suppressed, which lowers recall. Soft-NMS, which reduces scores instead of deleting boxes, can help here." },
+      { prompt: "A warehouse wants to count boxes on shelves, and they often touch. Which task do you choose?", answer: "Detection, or instance segmentation when the objects overlap heavily.", solution: "Semantic segmentation merges touching objects of the same class, so it cannot count them. Detection gives a separate result per object at lower labeling cost, so start there. Move to instance segmentation if heavy overlap defeats boxes." }
+    ],
+    quiz: { question: "Why can pixel accuracy be misleading for segmentation?", options: ["It only works on grayscale images", "A rare small object can be missed while accuracy stays high because background dominates", "It is impossible to compute"], answer: 1, explanation: "B is correct: when background fills most of the image, predicting all background scores well while missing the object entirely. Dice and IoU focus on overlap with the object. A and C are false." },
+    takeaways: ["Choose the simplest task that answers the question, because labels get expensive quickly.", "IoU defines whether a detection is correct, and NMS removes duplicate boxes.", "Use mAP for detection and Dice or IoU for segmentation, not pixel accuracy."],
+    interview: { question: "What is the difference between one-stage and two-stage detectors?", answer: "Two-stage detectors first propose candidate regions, then classify and refine them, and they often lead on accuracy. One-stage detectors predict classes and boxes in a single pass, which is usually faster. The gap has narrowed a lot, so I would choose using measured accuracy and latency on the target hardware." },
+    related: ["convolutional-neural-networks", "transfer-learning", "evaluation-metrics"],
+    miniProject: { title: "Fine-tune a detector", objective: "Adapt a pretrained detector to a small custom dataset and measure it properly.", tasks: ["Label about 100 images, or use the Penn-Fudan pedestrian dataset.", "Load `torchvision.models.detection.fasterrcnn_resnet50_fpn` with pretrained weights and replace its box predictor.", "Train with horizontal flips, transforming the boxes along with the images.", "Report mAP at IoU 0.5 and at 0.5:0.95 using `torchmetrics`, and inspect the worst predictions."], extension: "Vary the score threshold and NMS threshold, then plot how precision and recall respond." }
+  }
+];
+var languageLessons = [
+  {
+    slug: "tokenization-and-embeddings",
+    title: "Tokens and embeddings: turning text into numbers",
+    description: "Language models never see words. They see token ids and learned vectors where meaning becomes geometry.",
+    module: "Language & LLMs",
+    difficulty: "Intermediate",
+    estimatedMinutes: 15,
+    prerequisites: ["neural-networks"],
+    objectives: ["Tokenize text and handle unknown words and padding.", "Explain why subword tokenizers replaced whole-word vocabularies.", "Calculate cosine similarity and explain what embeddings do and do not capture."],
+    analogy: "Imagine a map where cities with similar climates sit close together. The coordinates mean nothing on their own, but distance is meaningful. Embeddings are a map for tokens with hundreds of dimensions, built so that tokens used in similar contexts end up nearby.",
+    intro: "A neural network needs numbers, so text must become numbers first. Tokenization splits text into pieces and assigns each an integer id. An embedding layer then maps each id to a vector of learned values, and those vectors are what the model actually processes. These early choices decide what a model can represent, what it costs, and some surprising failures, such as why models can miscount letters in a word.",
+    sections: [
+      { title: "Tokenization splits text into ids", kicker: "FROM STRINGS TO INTEGERS", body: "A simple tokenizer splits on whitespace and looks words up in a vocabulary. Reserved ids handle special cases: <pad> fills short sequences so batches line up, and <unk> stands in for anything not in the vocabulary. An attention mask tells the model which positions are real and which are padding. The vocabulary must be built from training data and then frozen.", example: "With the vocabulary {<pad>: 0, <unk>: 1, the: 2, cat: 3, sat: 4, dog: 5, a: 6, ran: 7}, the text \u201Cthe cat ran fast\u201D encodes to [2, 3, 7, 1, 0] at length 5. \u201Cfast\u201D is unknown, so it becomes 1, and the final 0 is padding." },
+      { title: "Subword tokenizers", kicker: "WHY MODERN MODELS SPLIT WORDS", body: "Whole-word vocabularies grow huge and still fail on new words, typos, and rare names. Byte-Pair Encoding (BPE) instead starts from characters and repeatedly merges the most frequent adjacent pair, so common words stay whole and rare words split into pieces. The model always has some representation for any input, with no unknown tokens. This also explains why token counts differ from word counts, and why models cost and limit by tokens.", points: ["A rough rule for English text: 1 token is about \xBE of a word, or about 4 characters.", "Models see tokens, not letters, so character-level tasks such as counting letters are harder than they appear.", "A model and its tokenizer are a pair, so never swap one without the other."] },
+      { title: "Embeddings: meaning as geometry", kicker: "LEARNED VECTORS", body: "An embedding layer is a lookup table with one learned vector per token id. Training moves vectors so that tokens appearing in similar contexts end up close together, an idea known as the distributional hypothesis. A one-hot vector treats every pair of words as equally different; an embedding of a few hundred dimensions can capture degrees of similarity. Classic word embeddings give one vector per word, so \u201Cbank\u201D gets the same vector for rivers and money, while transformer outputs depend on context.", example: "A vocabulary of 50,000 tokens with 768-dimensional embeddings has a table of 50,000 \xD7 768 = 38.4 million parameters." },
+      { title: "Measuring similarity", kicker: "COSINE SIMILARITY", body: "Cosine similarity compares the direction of two vectors, ignoring length: dot product divided by the product of their norms. It runs from \u22121 to 1, with higher meaning more similar. Sentence and document embeddings use the same idea and power semantic search, clustering, and recommendation. Be careful, though: embeddings absorb patterns from their training text, including social biases, and similarity is not the same as truth. \u201CThe drug works\u201D and \u201Cthe drug does not work\u201D can sit very close together.", kind: "math", example: "For cat = [0.9, 0.8, 0.1] and dog = [0.8, 0.9, 0.2], the dot product is 1.46 and the norms are about 1.208 and 1.220, so cosine \u2248 0.990. For ran = [0.1, 0.2, 0.9], cat versus ran gives about 0.303." }
+    ],
+    formula: "\\cos(a,b)=\\frac{a\\cdot b}{\\lVert a\\rVert\\,\\lVert b\\rVert}",
+    formulaExplanation: "a \xB7 b sums the element-wise products, and the norms divide out each vector\u2019s length, leaving only the angle between them. 1 means the same direction, 0 means perpendicular, and \u22121 means opposite.",
+    code: py`import numpy as np
+
+# Build a tiny vocabulary with reserved ids for padding and unknown words
+texts = ["the cat sat", "the dog sat", "a dog ran"]
+vocabulary = {"<pad>": 0, "<unk>": 1}
+for text in texts:
+    for word in text.split():
+        vocabulary.setdefault(word, len(vocabulary))
+print("vocabulary size:", len(vocabulary))
+
+def encode(text, length=5):
+    ids = [vocabulary.get(word, vocabulary["<unk>"]) for word in text.split()]
+    return (ids + [0] * length)[:length]
+
+print("encoded:", encode("the cat ran fast"))
+
+# Hand-made 3-D vectors standing in for learned embeddings
+embeddings = {
+    "cat": np.array([0.9, 0.8, 0.1]),
+    "dog": np.array([0.8, 0.9, 0.2]),
+    "ran": np.array([0.1, 0.2, 0.9]),
+}
+
+def cosine(a, b):
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+print("cat vs dog:", round(cosine(embeddings["cat"], embeddings["dog"]), 3))
+print("cat vs ran:", round(cosine(embeddings["cat"], embeddings["ran"]), 3))`,
+    codeOutput: "vocabulary size: 8\nencoded: [2, 3, 7, 1, 0]\ncat vs dog: 0.99\ncat vs ran: 0.303",
+    codeExplanation: "`setdefault` assigns the next free id only to new words, so ids stay stable. `encode` first pads and then cuts to a fixed length, which is what lets sequences form a rectangular batch. These vectors are written by hand to make the calculation clear. In a real model, `nn.Embedding(vocab_size, dim)` starts them at random and training moves them.",
+    practice: [
+      { prompt: "Using the lesson\u2019s vocabulary, encode \u201Ca cat flew\u201D at length 4.", answer: "[6, 3, 1, 0].", solution: "\u201Ca\u201D is 6, \u201Ccat\u201D is 3, and \u201Cflew\u201D is not in the vocabulary, so it becomes <unk> = 1. Padding fills the last position with 0." },
+      { prompt: "Calculate the cosine similarity of [1, 0] and [1, 1].", answer: "About 0.707.", solution: "The dot product is 1. The norms are 1 and \u221A2. So cosine = 1 / \u221A2 \u2248 0.707, which corresponds to a 45\xB0 angle." },
+      { prompt: "How many parameters does an embedding table have for 30,000 tokens at 512 dimensions, and how would doubling the vocabulary change it?", answer: "15.36 million, and doubling the vocabulary doubles it.", solution: "30,000 \xD7 512 = 15,360,000. The table is one row per token, so it grows linearly with vocabulary size and with the embedding dimension." }
+    ],
+    quiz: { question: "Why do modern language models use subword tokens instead of whole words?", options: ["Subwords look more scientific", "They handle rare and unseen words by splitting them into known pieces", "They remove the need for embeddings"], answer: 1, explanation: "B is correct: any word can be built from smaller known pieces, which avoids unknown tokens and keeps the vocabulary manageable. A is not a technical reason. C is wrong because every token still maps to an embedding." },
+    takeaways: ["Tokenizers convert text to ids, and a model must be used with its own tokenizer.", "Embeddings are learned vectors in which similar usage leads to nearby positions.", "Cosine similarity measures closeness in direction, not truth."],
+    interview: { question: "How are static word embeddings different from contextual embeddings?", answer: "Static embeddings such as word2vec assign one vector per word type, so \u201Cbank\u201D is the same in every sentence. Contextual embeddings, from models like BERT, compute a vector for each occurrence from its surrounding text, so the two senses of \u201Cbank\u201D get different vectors." },
+    related: ["recurrent-neural-networks", "attention-mechanism", "how-llms-generate-text"],
+    miniProject: { title: "Build a semantic search over your notes", objective: "See embeddings work end to end on your own text.", tasks: ["Collect about 50 short notes or paragraphs.", "Compute embeddings with `sentence-transformers` using the `all-MiniLM-L6-v2` model.", "For a query, return the top 3 notes by cosine similarity.", "Compare with exact keyword search on 10 queries and record where each one wins."], extension: "Plot the embeddings in 2-D with PCA and see which notes cluster together." }
+  },
+  {
+    slug: "how-llms-generate-text",
+    title: "How LLMs generate text",
+    description: "A language model predicts one token at a time. Sampling, temperature, and context windows explain most of its behavior.",
+    module: "Language & LLMs",
+    difficulty: "Intermediate",
+    estimatedMinutes: 17,
+    prerequisites: ["transformers", "tokenization-and-embeddings"],
+    objectives: ["Describe the generation loop and context window.", "Apply temperature to logits by hand, and explain top-k and top-p sampling.", "Explain why models make things up and how training shapes behavior."],
+    analogy: "Imagine an extremely well-read autocomplete. It has read an enormous library and, given your sentence so far, it estimates what comes next. It writes one piece, reads everything again including that piece, and continues. It is not looking anything up. It is predicting what plausible text looks like.",
+    intro: "An LLM is a transformer trained to predict the next token. Everything else, including chat, code, and translation, emerges from repeating that one step. This view explains a lot of practical behavior: why settings like temperature change the output, why long conversations can lose earlier context, and why a model can state something false with complete confidence.",
+    sections: [
+      { title: "The generation loop", kicker: "ONE TOKEN AT A TIME", body: "Tokenize the prompt and pass it through the model, which outputs a logit for every token in the vocabulary. Convert these to a probability distribution, pick one token, append it, and repeat until a stop token or a length limit. Production systems cache attention keys and values from earlier tokens, so each step only computes the new one. The context window limits how many tokens the model can consider at once, covering both the prompt and the response.", points: ["Input and output tokens both count toward the context window.", "Anything outside the window is not seen, unless it is summarized or retrieved back in.", "Cost and latency usually scale with token counts."] },
+      { title: "Temperature and sampling", kicker: "CONTROLLING RANDOMNESS", body: "Greedy decoding always takes the top token, which tends to be repetitive. Sampling draws from the distribution instead. Temperature divides the logits first: below 1 sharpens the distribution and above 1 flattens it. Top-k keeps only the k most likely tokens, and top-p (nucleus sampling) keeps the smallest set whose probabilities sum to at least p. Lower settings suit extraction and factual tasks, and higher ones suit brainstorming.", example: "For logits [2, 1, 0], temperature 1 gives probabilities [0.665, 0.245, 0.090]. Temperature 0.5 doubles the logits to [4, 2, 0], giving [0.867, 0.117, 0.016]. Temperature 2 halves them to [1, 0.5, 0], giving [0.506, 0.307, 0.186]. The order never changes; only the confidence does." },
+      { title: "How models are trained", kicker: "PRETRAINING AND ALIGNMENT", body: "Pretraining fits next-token prediction on large text collections, using cross-entropy loss. The result continues text but does not reliably follow instructions. A second phase shapes behavior: supervised fine-tuning on instruction examples, then preference-based methods in which humans or models rank responses, such as RLHF and Constitutional AI. Fine-tuning a pretrained model for a narrow domain is often more practical than training from scratch, and much of a model\u2019s value comes from this second stage.", points: ["A knowledge cutoff exists because training data stops at some date.", "System prompts are ordinary input the model is trained to prioritize, not hard rules.", "Prompting well means giving clear context, examples, and an output format."] },
+      { title: "Why models make things up", kicker: "LIMITS TO DESIGN AROUND", body: "A model is trained to produce plausible continuations, and it has no built-in check against reality. So it can produce a confident, fluent, and false statement, including invented citations. This is called hallucination, and well-written text is no evidence against it. Reduce the risk by providing sources through retrieval, asking the model to cite them, validating structured output, and evaluating on a test set for your task. Treat text from users or retrieved documents as untrusted, because prompt injection can try to override your instructions.", kind: "math", points: ["Use retrieval for facts and tools for arithmetic or current data.", "Build an evaluation set and rerun it whenever the prompt or model changes.", "Keep a person in the loop for high-stakes decisions."] }
+    ],
+    formula: "P(t_i)=\\frac{\\exp(z_i/T)}{\\sum_j \\exp(z_j/T)}",
+    formulaExplanation: "z\u1D62 is the logit for token i, and T is the temperature. T = 1 is the plain softmax. As T approaches 0, the probability concentrates on the top token, which is greedy decoding. As T grows, the distribution approaches uniform.",
+    code: py`import numpy as np
+
+logits = np.array([2.0, 1.0, 0.0])
+words = ["blue", "cloudy", "green"]
+
+def softmax(values):
+    exponentials = np.exp(values - values.max())
+    return exponentials / exponentials.sum()
+
+# Temperature divides the logits before softmax
+for temperature in (0.5, 1.0, 2.0):
+    probabilities = softmax(logits / temperature)
+    print(temperature, probabilities.round(3).tolist())
+
+def sample_next(logits, temperature, top_k, rng):
+    scaled = logits / temperature
+    keep = np.argsort(scaled)[-top_k:]       # the k highest-scoring tokens
+    probabilities = softmax(scaled[keep])
+    return keep[rng.choice(len(keep), p=probabilities)]
+
+rng = np.random.default_rng(7)
+draws = [words[sample_next(logits, 1.0, 2, rng)] for _ in range(1000)]
+print("top-2 draws:", {word: draws.count(word) for word in words})`,
+    codeOutput: "0.5 [0.867, 0.117, 0.016]\n1.0 [0.665, 0.245, 0.09]\n2.0 [0.506, 0.307, 0.186]\ntop-2 draws: {'blue': 721, 'cloudy': 279, 'green': 0}",
+    codeExplanation: "Subtracting the maximum before `np.exp` is a standard trick that avoids overflow. The output confirms the hand calculation. Top-k with k = 2 makes \u201Cgreen\u201D impossible, and \u201Cblue\u201D appears about 73% of the time, since 0.665 / (0.665 + 0.245) \u2248 0.731. This is how a sampler works in a real model, except that the logits come from a transformer and cover tens of thousands of tokens.",
+    practice: [
+      { prompt: "Logits are [1, 0] and temperature is 1. What is the probability of the first token? What happens at temperature 0.5?", answer: "About 0.731 at temperature 1, and about 0.881 at temperature 0.5.", solution: "At T = 1: e\xB9 / (e\xB9 + e\u2070) = 2.718 / 3.718 \u2248 0.731. At T = 0.5, the logits become [2, 0], so e\xB2 / (e\xB2 + 1) = 7.389 / 8.389 \u2248 0.881." },
+      { prompt: "Probabilities are [0.5, 0.3, 0.15, 0.05]. Which tokens does top-p with p = 0.75 keep?", answer: "The first two tokens.", solution: "Accumulate in order: 0.5, then 0.8. The total reaches at least 0.75 after two tokens, so the top two are kept and their probabilities are renormalized to 0.625 and 0.375." },
+      { prompt: "A model has a 200,000-token context window. A prompt uses 195,000 tokens and you request up to 10,000 in the output. What happens?", answer: "The request does not fit, because the input and output share the window.", solution: "195,000 + 10,000 = 205,000, which exceeds 200,000. Depending on the API, it returns an error or stops early. Shorten the input, for example by retrieving only relevant passages or summarizing history, or reduce the output limit." }
+    ],
+    quiz: { question: "What does lowering the temperature do?", options: ["Changes which token has the highest logit", "Concentrates probability on the most likely tokens, making output more predictable", "Makes the model look up facts"], answer: 1, explanation: "B is correct: dividing logits by a small T widens the gaps between them, so softmax concentrates on the top tokens. A is wrong because scaling keeps the order. C is wrong because temperature only changes sampling and has no effect on the model\u2019s knowledge." },
+    takeaways: ["LLMs generate by repeatedly predicting a distribution over the next token and sampling from it.", "Temperature, top-k, and top-p control randomness, not knowledge.", "Fluent text is not evidence of truth, so ground important answers in sources and evaluate them."],
+    interview: { question: "How would you reduce hallucinations in an LLM application?", answer: "Combine retrieval so the model answers from supplied sources, instructions to cite those sources and to say when it does not know, lower temperature for factual tasks, and verification steps such as schema checks and citation validation. Then measure with an evaluation set of real questions, because without one you cannot tell if a change helped." },
+    related: ["transformers", "tokenization-and-embeddings", "retrieval-augmented-generation"],
+    miniProject: { title: "Build a character-level text generator", objective: "Implement the generation loop yourself, with no libraries hiding it.", tasks: ["Train a small character-level model in PyTorch on a text file of your choice.", "Write a `generate` function with greedy decoding, temperature, and top-k.", "Generate the same prompt at temperatures 0.2, 0.8, and 1.5, and compare the results.", "Measure how the output changes as you limit the context window."], extension: "Add top-p sampling, and test whether caching earlier computation makes your loop faster." }
+  },
+  {
+    slug: "retrieval-augmented-generation",
+    title: "Retrieval-augmented generation (RAG)",
+    description: "Give a language model the right documents at answer time. Most RAG quality is decided before the model is ever called.",
+    module: "Language & LLMs",
+    difficulty: "Advanced",
+    estimatedMinutes: 19,
+    prerequisites: ["how-llms-generate-text", "tokenization-and-embeddings"],
+    objectives: ["Trace the RAG pipeline from chunking to a cited answer.", "Calculate reciprocal rank fusion and explain hybrid search.", "Evaluate retrieval and generation separately."],
+    analogy: "A closed-book exam tests what you memorized, and an open-book exam lets you look things up. RAG turns a language model\u2019s exam into an open-book one. It still needs to find the right page and read it correctly, and most failures come from finding the wrong page.",
+    intro: "A model does not know your private documents or recent events. Retrieval-augmented generation fetches relevant text at question time and places it in the prompt, so the model answers from evidence. It is often a better first step than fine-tuning when the issue is missing knowledge: documents can be updated without retraining, and answers can cite sources. Quality depends mostly on retrieval, since a model cannot use a passage that was never retrieved.",
+    sections: [
+      { title: "Indexing: chunking is a design choice", kicker: "BEFORE ANY QUESTION ARRIVES", body: "Split documents into chunks, embed each one, and store the vectors with metadata such as source and date. Chunk size is a real trade-off: small chunks match precisely but lose context, and large chunks keep context but dilute the match and use more of the context window. Split on structure such as headings and paragraphs, and overlap chunks slightly so an idea is not cut in half. Filter by metadata when you can, so a query about 2026 policy does not retrieve the 2019 version.", points: ["Common starting point: a few hundred tokens with roughly 10\u201320% overlap.", "Tables and code usually need their own handling.", "Re-embed everything if you change the embedding model."] },
+      { title: "Retrieval: dense, sparse, or both", kicker: "HYBRID SEARCH", body: "Dense retrieval compares embeddings and finds matches in meaning even when the words differ. Sparse retrieval such as BM25 matches exact terms, and so excels with product codes, names, and acronyms that embeddings can blur. Hybrid search runs both and merges the results. Reciprocal Rank Fusion merges rankings using positions alone, which conveniently avoids comparing incompatible score scales.", example: "Rank fusion with k = 60: rankings [a, b, c] and [c, a, d]. Document a scores 1/61 + 1/62 \u2248 0.03252. Document c scores 1/63 + 1/61 \u2248 0.03227. Document b gets only 1/62 \u2248 0.01613, and document d gets only 1/63 \u2248 0.01587. Appearing in both lists beats a single high rank." },
+      { title: "Rerank, then generate", kicker: "FROM CANDIDATES TO AN ANSWER", body: "A cross-encoder reranker reads the query and each candidate together, which is more accurate but too slow for the whole corpus. So retrieve generously, perhaps 25\u201350 candidates, then rerank down to a few. Build a prompt that separates instructions from sources, requires citations, and tells the model to say so when the sources do not contain the answer. Retrieved text is untrusted input: a document can contain instructions meant to hijack the model, so never let it trigger sensitive actions without checks.", points: ["Retrieve broadly for recall, then rerank for precision.", "Check that citations point to real, retrieved chunks.", "Respect access controls during retrieval, so users see only permitted documents."] },
+      { title: "Evaluate each stage separately", kicker: "FIND THE BROKEN STEP", body: "When an answer is wrong, the cause is usually either that the right chunk was not retrieved or that the model misused it. Measure these separately. Retrieval uses recall@k and MRR against a labeled question set. Generation uses faithfulness, which asks whether claims are supported by the sources, and answer relevance. Build the test set from real user questions, including ones with no answer in your documents, and rerun it after every change.", kind: "math", example: "If 40 of 50 test questions have their correct chunk in the top 5, recall@5 = 0.80. No prompt can fix the other 10 questions, so improve retrieval first." }
+    ],
+    formula: "\\text{RRF}(d)=\\sum_{r\\in R}\\frac{1}{k+\\text{rank}_r(d)}",
+    formulaExplanation: "For each ranking r that contains document d, add 1 divided by k plus its position. k, commonly 60, dampens the advantage of the very top ranks. Documents ranked well by several retrievers rise to the top.",
+    code: py`from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+chunks = [
+    "Refunds are available within 30 days of purchase with a receipt.",
+    "Standard shipping takes 3 to 5 business days within the country.",
+    "Gift cards never expire and cannot be exchanged for cash.",
+    "Refund requests after 30 days are reviewed by the support team.",
+]
+
+# Index: fit the vectorizer on the documents, not on the questions
+vectorizer = TfidfVectorizer(stop_words="english")
+index = vectorizer.fit_transform(chunks)
+
+def retrieve(question, k=2):
+    scores = cosine_similarity(vectorizer.transform([question]), index)[0]
+    best = scores.argsort()[::-1][:k]
+    return [(int(i), round(float(scores[i]), 3)) for i in best]
+
+question = "How many days do I have to get a refund?"
+results = retrieve(question)
+print("retrieved:", results)
+
+# Reciprocal rank fusion merges two rankings without comparing their scores
+def reciprocal_rank_fusion(rankings, k=60):
+    totals = {}
+    for ranking in rankings:
+        for rank, doc in enumerate(ranking, start=1):
+            totals[doc] = totals.get(doc, 0) + 1 / (k + rank)
+    return sorted(totals.items(), key=lambda item: item[1], reverse=True)
+
+fused = reciprocal_rank_fusion([["a", "b", "c"], ["c", "a", "d"]])
+print("fused:", [(doc, round(score, 5)) for doc, score in fused])
+
+context = "\n".join(f"[{i}] {chunks[i]}" for i, _ in results)
+prompt = f"Answer using only the sources. Cite them.\n{context}\nQuestion: {question}"
+print(prompt.splitlines()[0])`,
+    codeOutput: "retrieved: [(3, 0.483), (0, 0.153)]\nfused: [('a', 0.03252), ('c', 0.03227), ('b', 0.01613), ('d', 0.01587)]\nAnswer using only the sources. Cite them.",
+    codeExplanation: "Look closely at the retrieval: chunk 0 is the best answer, but it ranks below chunk 3. The query says \u201Crefund\u201D and chunk 0 says \u201CRefunds\u201D, so TF-IDF does not count them as the same term. Chunk 3 matches \u201Crefund\u201D exactly. This is the core weakness of lexical search and why dense embeddings, stemming, and hybrid search exist. Printing retrieval results is the single most useful RAG debugging habit. This example stops at building the prompt, which you would send to an LLM.",
+    practice: [
+      { prompt: "With k = 60, a document ranks 1st in one list and 4th in another. What is its RRF score?", answer: "About 0.0320.", solution: "1/(60 + 1) + 1/(60 + 4) = 1/61 + 1/64 \u2248 0.01639 + 0.01563 \u2248 0.0320." },
+      { prompt: "Users search for error code \u201CERR_4417\u201D and the system returns unrelated results. What do you change?", answer: "Add sparse keyword search, making the system hybrid.", solution: "Embeddings tend to blur rare identifiers, so an exact code has little semantic meaning for them. BM25 gives rare exact matches high weight. Merge the two result lists with RRF so semantic questions keep working." },
+      { prompt: "Your recall@5 is 0.95 but answers are often wrong. Where do you look next?", answer: "At generation: the prompt, context ordering, and faithfulness.", solution: "The right chunks are usually present, so retrieval is not the main issue. Inspect whether the model ignores sources, whether too much irrelevant context drowns them, or whether chunks lack needed context. Reranking to fewer chunks and stricter instructions often help. Measure faithfulness to confirm it." }
+    ],
+    quiz: { question: "An answer is wrong. What should you check first?", options: ["Switch to a larger model immediately", "Whether the correct passage was actually retrieved", "Raise the temperature"], answer: 1, explanation: "B is correct: if the right text never reached the model, no model or prompt can reliably fix it. So check retrieval before changing generation. A is expensive and may not help, and C adds randomness rather than evidence." },
+    takeaways: ["RAG gives a model evidence at answer time, and documents update without retraining.", "Hybrid search with reranking covers both meaning and exact terms.", "Evaluate retrieval and generation separately, using real questions."],
+    interview: { question: "When would you use RAG instead of fine-tuning?", answer: "RAG suits knowledge that changes or must be cited, since you can update documents without retraining. Fine-tuning suits changing behavior, such as style, format, or a specialized task. They combine well: retrieve for facts, and fine-tune for how the answer is produced. I would normally try RAG first because it is cheaper to change and easier to audit." },
+    related: ["how-llms-generate-text", "tokenization-and-embeddings", "evaluation-metrics"],
+    miniProject: { title: "Ship a cited question-answering tool", objective: "Build a small RAG system and measure it honestly.", tasks: ["Collect 20 or more documents you know well, such as course notes or product docs.", "Chunk them, then build dense and BM25 indexes, merged with RRF.", "Write 25 test questions with their expected source chunks, including 5 with no answer.", "Measure recall@5, then generate answers with citations and check their faithfulness by hand."], extension: "Add a cross-encoder reranker and report whether it improves your metrics enough to justify its latency." }
+  }
+];
+var productionLessons = [
+  {
+    slug: "serving-models",
+    title: "Serving models: from notebook to reliable service",
+    description: "A model is only useful if something can call it. Package it, guard its inputs, and measure the tail of your latency.",
+    module: "Production AI",
+    difficulty: "Advanced",
+    estimatedMinutes: 16,
+    prerequisites: ["feature-engineering-and-pipelines"],
+    objectives: ["Choose batch, online, or streaming serving from a product need.", "Package a model with its preprocessing and version, and validate inputs.", "Read latency percentiles and pick a safe rollout strategy."],
+    analogy: "A recipe that works once in your kitchen does not make a restaurant. A restaurant needs consistent ingredients, a way to reject bad orders, a target time per dish, and a way to try a new dish on a few tables before changing the whole menu.",
+    intro: "A notebook can show that a model works, but production asks different questions. What happens with malformed input? How slow is the slowest request? Which version answered this user? How do you roll back? Serving is mostly ordinary software engineering applied to an artifact that can fail silently, because a bad model returns a confident wrong answer instead of an error.",
+    sections: [
+      { title: "Batch, online, or streaming", kicker: "CHOOSE THE SIMPLEST THAT WORKS", body: "Batch prediction runs on a schedule and stores results, which is cheap and simple, and it works when predictions can be slightly stale, such as nightly recommendations. Online serving answers each request within milliseconds, for cases like fraud checks at payment time. Streaming reacts to events as they arrive. Batch is often underrated: if predictions for all users can be computed overnight, you avoid running a low-latency service.", points: ["Batch: scores everything in advance, and new users have no prediction yet.", "Online: fresh but requires low latency and high availability.", "Streaming: responds to events, but needs more infrastructure."] },
+      { title: "Package the whole pipeline", kicker: "REPRODUCIBLE ARTIFACTS", body: "Save preprocessing and model together with a version, the training data reference, metrics, and dependency versions. Mismatch between training and serving preprocessing, known as training-serving skew, is one of the most common production bugs. Pickle-based formats such as joblib can run arbitrary code when loaded, so only load artifacts you trust. ONNX and safetensors are safer and more portable alternatives for sharing and serving.", points: ["Record the model version in every prediction\u2019s logs.", "Pin dependency versions; a library upgrade can break a saved pickle.", "Put models in a registry so a rollback is one step."] },
+      { title: "Latency means percentiles", kicker: "MEASURE THE TAIL", body: "Averages hide the requests users complain about. The p95 is the value that 95% of requests finish under. Tail latency matters more than you might expect: a page that makes 10 calls will often be held back by its slowest call. Reduce latency through smaller models, quantization, caching repeated requests, and batching on GPUs, which raises throughput but adds a little wait for each request.", example: "For 20 latencies whose mean is 55.1 ms, the p50 is 29 ms, but one request took 480 ms and the p95 is 109.5 ms. The mean describes almost nobody\u2019s actual experience here. Report p50, p95, and p99 against a target, such as \u201Cp95 under 100 ms\u201D." },
+      { title: "Roll out without betting everything", kicker: "SAFE DEPLOYMENT", body: "A shadow deployment sends a copy of live traffic to the new model and logs its answers without showing them, which tests it with no user risk. A canary gives it a small share of real traffic, such as 5%, and then gradually more if metrics hold. An A/B test measures the business effect with a statistically sound comparison. Always keep a one-step rollback and a fallback, such as the previous model or a simple rule, for when the model is unavailable.", kind: "math", points: ["Shadow: checks stability and agreement with no user impact.", "Canary: limits the blast radius with real traffic.", "A/B: measures whether the model actually improves the product."] }
+    ],
+    formula: "p_{95} = \\min\\{t : P(\\text{latency} \\le t) \\ge 0.95\\}",
+    formulaExplanation: "The p95 is the smallest time such that at least 95% of requests finish within it. Software often interpolates between neighboring samples, as NumPy does in the example below, so results from different tools can differ slightly.",
+    code: py`import io
+import joblib
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+# Train and save the whole pipeline, so preprocessing ships with the model
+X = np.array([[1.0, 200.0], [2.0, 150.0], [8.0, 40.0], [9.0, 30.0]])
+y = np.array([0, 0, 1, 1])
+pipeline = make_pipeline(StandardScaler(), LogisticRegression()).fit(X, y)
+
+artifact = io.BytesIO()
+joblib.dump({"model": pipeline, "version": "2026-11-01"}, artifact)
+artifact.seek(0)
+loaded = joblib.load(artifact)
+
+def predict(payload):
+    # Validate at the boundary: reject bad input instead of guessing
+    visits, spend = payload.get("visits"), payload.get("spend")
+    if not isinstance(visits, (int, float)) or not isinstance(spend, (int, float)):
+        return {"error": "visits and spend must be numbers"}
+    if visits < 0 or spend < 0:
+        return {"error": "visits and spend cannot be negative"}
+    probability = loaded["model"].predict_proba([[visits, spend]])[0][1]
+    return {"probability": round(float(probability), 2), "model_version": loaded["version"]}
+
+print(predict({"visits": 8, "spend": 35}))
+print(predict({"visits": "many", "spend": 35}))
+print(predict({"visits": -1, "spend": 35}))
+
+# Report tail latency: a good average can hide very slow requests
+latencies_ms = np.array([18, 20, 21, 22, 22, 23, 24, 25, 26, 28, 30, 31, 33, 35, 38, 40, 44, 52, 90, 480])
+print("mean:", latencies_ms.mean(), "p50:", np.percentile(latencies_ms, 50), "p95:", round(np.percentile(latencies_ms, 95), 1))`,
+    codeOutput: "{'probability': 0.79, 'model_version': '2026-11-01'}\n{'error': 'visits and spend must be numbers'}\n{'error': 'visits and spend cannot be negative'}\nmean: 55.1 p50: 29.0 p95: 109.5",
+    codeExplanation: "Saving a dictionary keeps the model and its version together, so each response can report which model produced it. `predict` rejects bad input with a clear message, because a model handed garbage still returns a number. In a real service this function would sit behind a framework such as FastAPI, with validation through Pydantic. The `BytesIO` buffer stands in for a file so that the example leaves nothing on disk.",
+    practice: [
+      { prompt: "A page calls 5 services, and each is independently slow 5% of the time. How often does a page load hit at least one slow call?", answer: "About 22.6% of the time.", solution: "The chance that all five are fast is 0.95\u2075 \u2248 0.774, so the chance of at least one being slow is 1 \u2212 0.774 \u2248 0.226. This is why tail latency matters." },
+      { prompt: "A retailer refreshes product recommendations once a day and they are read on page load. Which serving pattern fits?", answer: "Batch prediction with stored results.", solution: "Predictions can be computed nightly and looked up in a fast store, so there is no low-latency model service to run. A fallback for new users, such as popular items, is the main addition." },
+      { prompt: "Offline accuracy is 92%, but the same model scores far lower in production with no errors in the logs. What do you check first?", answer: "Training-serving skew in the preprocessing.", solution: "Compare the actual feature values reaching the model against training data. Typical causes are different scaling, a default value for a missing feature, changed units, or features computed differently online. Logging inputs and using one shared pipeline both help prevent it." }
+    ],
+    quiz: { question: "Why report p95 latency rather than only the mean?", options: ["The mean is hard to compute", "The mean can hide slow requests that affect real users", "p95 is always lower than the mean"], answer: 1, explanation: "B is correct: a few very slow requests can be masked by many fast ones, and users feel those slow ones. A is false. C is false as well: p95 is usually higher than the mean, although a few extreme outliers can reverse that, which is itself a reason to look at several percentiles." },
+    takeaways: ["Use the simplest serving pattern that meets the need; batch is often enough.", "Ship preprocessing and model together, with a version on every prediction.", "Measure percentiles, and roll out through shadow and canary stages with a rollback ready."],
+    interview: { question: "What is training-serving skew and how do you prevent it?", answer: "It is a difference between the data or feature logic used in training and what the model sees in production. I prevent it by sharing one preprocessing pipeline, using a feature store when that is justified, logging serving inputs, and comparing their distributions with the training data." },
+    related: ["feature-engineering-and-pipelines", "monitoring-and-drift", "evaluation-metrics"],
+    miniProject: { title: "Wrap a model in a real API", objective: "Build a small, honest prediction service.", tasks: ["Train a scikit-learn pipeline and save it with its version.", "Serve it through FastAPI, with a Pydantic schema that validates input.", "Add `/health`, and log the version and latency for every request.", "Run a load test with `locust` or `hey`, and report p50, p95, and p99."], extension: "Package it in Docker and add a shadow route that logs a second model\u2019s predictions without returning them." }
+  },
+  {
+    slug: "monitoring-and-drift",
+    title: "Monitoring and drift: keeping models honest",
+    description: "A deployed model decays quietly because the world changes. Learn what to watch and when to act.",
+    module: "Production AI",
+    difficulty: "Advanced",
+    estimatedMinutes: 15,
+    prerequisites: ["serving-models", "evaluation-metrics"],
+    objectives: ["Distinguish data drift, concept drift, and data quality failures.", "Calculate the Population Stability Index by hand.", "Design monitoring and a retraining policy when labels arrive late."],
+    analogy: "A weather model trained on past decades can slowly become less accurate as the climate shifts, even though no code has changed. Nothing crashes, and the forecasts look just as confident. You only find out by continuing to compare predictions against what actually happens.",
+    intro: "Normal software usually fails loudly. A model usually fails silently: the API returns 200, and the predictions look normal, but they are becoming wrong. Users change, products launch, upstream teams rename columns, and fraudsters adapt. Monitoring means detecting these changes before they turn into bad decisions, and that includes the hard case where true labels arrive weeks later.",
+    sections: [
+      { title: "What actually changes", kicker: "KINDS OF DRIFT", body: "Data drift (covariate shift) means the input distribution P(x) changes, such as a marketing campaign bringing in younger users. Concept drift means the relationship P(y | x) changes, so the same inputs now lead to different outcomes, as when fraud tactics change or a pandemic alters shopping. Label drift means the outcome rates shift. Data drift does not always harm a model, whereas concept drift generally does. Most real incidents, however, are plain data quality failures.", points: ["Data drift: inputs look different.", "Concept drift: the right answer for the same input has changed.", "Data quality: a pipeline broke, such as a unit change or a column filled with nulls."] },
+      { title: "Measure drift with PSI", kicker: "POPULATION STABILITY INDEX", body: "PSI compares how a feature\u2019s values fall across fixed bins now versus in a reference period. The bin edges come from the reference data and stay fixed. A common rule of thumb reads below 0.1 as stable, 0.1\u20130.25 as moderate change, and above 0.25 as a significant shift. These thresholds are conventions rather than laws, so calibrate them on your own history. With very large samples, statistical tests such as Kolmogorov\u2013Smirnov flag trivially small differences, so effect size is often more useful.", example: "Reference shares are [0.25, 0.25, 0.25, 0.25] and current shares are [0.1, 0.2, 0.3, 0.4]. Sum (a \u2212 e) \xD7 ln(a / e): (\u22120.15)(\u22120.916) + (\u22120.05)(\u22120.223) + (0.05)(0.182) + (0.15)(0.470) \u2248 0.137 + 0.011 + 0.009 + 0.071 = 0.228, which is moderate and close to the action threshold." },
+      { title: "Layers of monitoring", kicker: "WHAT TO WATCH", body: "Watch several layers, from cheapest to most valuable. Service health covers errors, latency, and traffic. Data quality covers null rates, ranges, and schema. Distribution checks cover input and prediction drift. Model quality compares predictions with true labels. Business metrics show actual impact. When labels arrive late, such as loan defaults after months, prediction drift and data checks act as early warnings, and a sample of human-labeled cases can fill the gap.", points: ["Alert on things someone can act on, or alerts will be ignored.", "Slice metrics by segment, since an average can hide a failing group.", "Beware feedback loops, where the model\u2019s decisions affect which outcomes you see."] },
+      { title: "When to retrain", kicker: "A POLICY, NOT A REFLEX", body: "Retraining on a schedule is simple and works when change is gradual. Triggered retraining reacts to monitored drops. Either way, treat each retrained model as a new release: validate it against the current model on recent data, and roll it out gradually. Automatically deploying whatever comes out of training is risky, since it can learn from a broken pipeline. And retraining cannot fix a data outage, so diagnose first.", kind: "math", points: ["Evaluate on the most recent period, using a time-based split.", "Compare with the current model before promoting.", "Keep the previous version ready for rollback."] }
+    ],
+    formula: "\\text{PSI}=\\sum_{i}(a_i-e_i)\\ln\\frac{a_i}{e_i}",
+    formulaExplanation: "e\u1D62 and a\u1D62 are the shares of data in bin i for the reference and current periods. Each term is nonnegative, because (a \u2212 e) and ln(a / e) always share a sign, so PSI is 0 only when the distributions match across bins. A small floor prevents log(0) in empty bins.",
+    code: py`import numpy as np
+
+def population_stability_index(expected, actual, bins=10, floor=1e-4):
+    # Bin edges come from the reference data and stay fixed
+    edges = np.quantile(expected, np.linspace(0, 1, bins + 1))
+    edges[0], edges[-1] = -np.inf, np.inf
+    expected_share = np.histogram(expected, edges)[0] / len(expected)
+    actual_share = np.histogram(actual, edges)[0] / len(actual)
+    # A floor stops an empty bin from producing log(0)
+    expected_share = np.clip(expected_share, floor, None)
+    actual_share = np.clip(actual_share, floor, None)
+    return float(np.sum((actual_share - expected_share) * np.log(actual_share / expected_share)))
+
+# The hand calculation from this lesson
+hand = (np.array([0.1, 0.2, 0.3, 0.4]) - 0.25) * np.log(np.array([0.1, 0.2, 0.3, 0.4]) / 0.25)
+print("hand PSI:", round(float(hand.sum()), 3))
+
+rng = np.random.default_rng(7)
+reference = rng.normal(50, 10, 10_000)
+print("same distribution:", round(population_stability_index(reference, rng.normal(50, 10, 10_000)), 3))
+print("small shift:", round(population_stability_index(reference, rng.normal(52, 10, 10_000)), 3))
+print("large shift:", round(population_stability_index(reference, rng.normal(60, 12, 10_000)), 3))`,
+    codeOutput: "hand PSI: 0.228\nsame distribution: 0.001\nsmall shift: 0.047\nlarge shift: 0.745",
+    codeExplanation: "Quantile edges give each reference bin about the same share of data, and setting the outer edges to infinity catches new values outside the old range. Two samples from the same distribution give a PSI near 0. A 0.2-standard-deviation shift stays under the 0.1 line, so it would pass unnoticed by this rule, and only you can decide whether that is acceptable. A shift of one standard deviation with a wider spread is unmistakable.",
+    practice: [
+      { prompt: "A bin\u2019s reference share is 0.2 and its current share is 0.4. What is that bin\u2019s PSI contribution?", answer: "About 0.139.", solution: "(0.4 \u2212 0.2) \xD7 ln(0.4 / 0.2) = 0.2 \xD7 ln 2 \u2248 0.2 \xD7 0.693 \u2248 0.139." },
+      { prompt: "Input distributions look stable, but fraud losses are climbing fast. What kind of drift is most likely?", answer: "Concept drift.", solution: "The inputs look the same, but their relationship with the outcome has changed, since attackers adapted. Input drift checks would not detect this. Performance on recently confirmed labels and a review of high-value cases would." },
+      { prompt: "Overnight, a feature\u2019s average jumps from 170 to 67. What do you suspect first, and what do you do?", answer: "A unit or pipeline change, not real-world drift. Fix the pipeline rather than retraining.", solution: "A sudden step usually means a pipeline issue, such as height changing from centimeters to inches, since 170 cm \u2248 67 in. Retraining would just bake in the bug. Check upstream changes, add range checks, and consider a fallback while it is fixed." }
+    ],
+    quiz: { question: "True labels arrive 90 days after each prediction. What can you monitor today?", options: ["Nothing until the labels arrive", "Input drift, prediction distribution, and data quality as early signals", "Only server uptime"], answer: 1, explanation: "B is correct: these need no labels and can warn you early, even though they do not directly measure accuracy. A leaves you blind for months. C misses silent model failure, because a service can be up and still be wrong." },
+    takeaways: ["Models fail silently, so service health alone is not enough.", "Separate data drift, concept drift, and data quality failures, because each has a different fix.", "Treat retraining as a validated release, not an automatic reflex."],
+    interview: { question: "How would you monitor a model when ground-truth labels are delayed?", answer: "I would track data quality, input drift, and prediction drift as leading indicators, sample recent predictions for human labeling, and use proxy outcomes that arrive sooner, such as a late-payment flag for a loan default model. When real labels arrive, I would backfill performance by cohort to confirm whether the early signals were right." },
+    related: ["serving-models", "evaluation-metrics", "responsible-ai"],
+    miniProject: { title: "Simulate a drifting model", objective: "Watch a model decay and test whether your monitoring would have caught it.", tasks: ["Train a classifier on a synthetic dataset, and treat that as your reference period.", "Generate 12 monthly batches with gradual covariate shift, then introduce concept drift in month 8.", "Plot PSI per feature and true accuracy per month on the same chart.", "Write down when an alert would have fired, and whether each kind of drift was detectable before accuracy dropped."], extension: "Add monthly and triggered retraining, then compare accuracy and the number of retrains for each." }
+  },
+  {
+    slug: "responsible-ai",
+    title: "Responsible AI: fairness, documentation, and risk",
+    description: "A model can look accurate overall and still fail specific people. Measure it, document it, and decide deliberately.",
+    module: "Production AI",
+    difficulty: "Advanced",
+    estimatedMinutes: 16,
+    prerequisites: ["evaluation-metrics"],
+    objectives: ["Calculate selection rate, TPR, and FPR per group.", "Explain why common fairness definitions can conflict.", "Write a useful model card and decide when not to automate."],
+    analogy: "A bridge is not safe because the average truck crosses it. Engineers document load limits, inspect for specific failure modes, and sometimes close it. Responsible AI brings the same habit to models: state the limits, test where it could fail, and accept that sometimes the right answer is not to build the thing.",
+    intro: "A high overall score can hide serious harm to a small group. Data records past decisions, including unfair ones, and removing a sensitive column does not fix that, because other features act as proxies. Responsible AI is not a separate checkbox. It is the same evidence-based discipline as the rest of this course: define the harm you care about, measure it, and make the trade-offs explicit and owned by someone.",
+    sections: [
+      { title: "Where harm comes from", kicker: "BEFORE THE MODEL", body: "Bias enters long before training. Historical bias means labels encode past decisions: a model trained on who was hired learns who was hired before, not who would do well. Representation bias means some groups have too few examples. Measurement bias means the target is a poor proxy, such as using healthcare spending to stand in for health need, when groups with less access spend less for the same illness. Dropping a sensitive attribute rarely helps, since postcode or name can reveal it.", points: ["Ask what the label actually measures.", "Check who is missing or underrepresented in the data.", "Look for proxies of sensitive attributes among the features."] },
+      { title: "Measure by group", kicker: "DISAGGREGATED EVALUATION", body: "Always break metrics down by relevant groups. Selection rate is the share of a group receiving the positive decision. True positive rate (TPR) is the share of truly positive people who are identified. False positive rate (FPR) is the share of truly negative people wrongly flagged. Small groups give noisy estimates, so report the counts and confidence intervals too, not just a percentage.", example: "In the code below, both groups have 80% accuracy. But group A has selection rate 0.6, TPR 0.83, and FPR 0.25, while group B has selection rate 0.3, TPR 0.67, and FPR 0.14. Equal accuracy hides the fact that qualified people in group B are missed more often." },
+      { title: "Fairness definitions conflict", kicker: "A CHOICE, NOT A CALCULATION", body: "Demographic parity asks for equal selection rates. Equal opportunity asks for equal TPR. Equalized odds asks for equal TPR and FPR. Predictive parity asks for equal precision. When base rates differ between groups, a model that is not perfect generally cannot satisfy calibration and equal error rates at the same time. So fairness cannot be fully automated. Someone has to choose, based on the context and who bears the cost of each mistake.", kind: "math", points: ["Which mistake harms people most in this decision?", "Is the label itself trustworthy across groups?", "Who was consulted, and who is accountable for the choice?"] },
+      { title: "Document and decide", kicker: "MODEL CARDS AND RISK", body: "A model card records intended use, out-of-scope uses, data, group-level metrics, limitations, and contacts. Also think about privacy: models can memorize personal data, and LLM apps can leak what they are given. Think about security too, including prompt injection in LLM systems. For high-stakes areas such as hiring, credit, and health, check applicable regulations, and provide a way for people to appeal to a human. Sometimes the responsible conclusion is not to automate at all.", example: "A useful limitation reads: \u201CTrained on adult patients at three hospitals. Not evaluated on children. Recall drops from 0.91 to 0.74 for scans from older machines.\u201D Someone can act on that. \u201CThe model may have limitations\u201D says nothing." }
+    ],
+    formula: "\\text{TPR}_g=\\frac{TP_g}{TP_g+FN_g} \\qquad \\text{FPR}_g=\\frac{FP_g}{FP_g+TN_g}",
+    formulaExplanation: "The same formulas as in evaluation metrics, but calculated separately for each group g. Equal opportunity compares TPR across groups, and equalized odds compares both TPR and FPR.",
+    code: py`import numpy as np
+
+# Labels and decisions for two groups with different base rates
+group = np.array(["A"] * 10 + ["B"] * 10)
+actual = np.array([1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0])
+predicted = np.array([1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0])
+
+print("group | selected | TPR | FPR | precision")
+for name in ("A", "B"):
+    mask = group == name
+    y, p = actual[mask], predicted[mask]
+    selected = p.mean()
+    tpr = p[y == 1].mean()
+    fpr = p[y == 0].mean()
+    precision = y[p == 1].mean()
+    print(name, round(float(selected), 2), round(float(tpr), 2), round(float(fpr), 2), round(float(precision), 2))
+
+overall = (actual == predicted).mean()
+print("overall accuracy:", round(float(overall), 2))`,
+    codeOutput: "group | selected | TPR | FPR | precision\nA 0.6 0.83 0.25 0.83\nB 0.3 0.67 0.14 0.67\noverall accuracy: 0.8",
+    codeExplanation: "Selection rate needs no labels, while TPR and FPR condition on the true label, and precision conditions on the prediction. Group A has a higher base rate (6 of 10 positive) than group B (3 of 10). Equalizing selection rates would force a different kind of error somewhere else. With 10 examples per group, these numbers are for illustrating the calculation: real audits need larger samples and confidence intervals. Libraries such as Fairlearn make this easy to repeat.",
+    practice: [
+      { prompt: "Group G has TP = 30, FN = 20, FP = 10, TN = 40. Calculate its selection rate, TPR, and FPR.", answer: "Selection rate 0.40, TPR 0.60, FPR 0.20.", solution: "There are 100 people, and 30 + 10 = 40 received the positive decision, so the selection rate is 0.40. TPR = 30 / (30 + 20) = 0.60. FPR = 10 / (10 + 40) = 0.20." },
+      { prompt: "A team removes \u201Cgender\u201D from a hiring model and says it is now fair. What is wrong with that reasoning?", answer: "Other features can act as proxies, and the labels may still encode past bias.", solution: "Features such as college, activities, or career gaps can reveal gender, and past hiring decisions used as labels may already be skewed. Removing a column also makes bias harder to measure. Audit outcomes by group, using the attribute for evaluation where lawful." },
+      { prompt: "A screening tool has much higher FPR for one group, and a positive result triggers an invasive test. Which metric gap matters most here, and why?", answer: "The FPR gap, because false positives cause the direct harm.", solution: "A false positive sends a healthy person into an invasive procedure, and this burden falls more on one group. Investigate the causes, consider group-aware thresholds where lawful and appropriate, and report the trade-off in terms of recall. Clinicians and affected people should be part of that decision." }
+    ],
+    quiz: { question: "Two groups have identical overall accuracy. What can you conclude?", options: ["The model treats both groups fairly", "Very little: their false positive and false negative rates may differ a lot", "The data must be perfectly balanced"], answer: 1, explanation: "B is correct: the same accuracy can come from very different mixes of errors, which is exactly what the code example shows. A is the mistake this lesson warns about. C does not follow from equal accuracy." },
+    takeaways: ["Bias enters through labels, representation, and measurement, long before training.", "Always evaluate by group, and report sample sizes along with the rates.", "Fairness definitions can conflict, so the choice must be explicit, documented, and owned by people."],
+    interview: { question: "Is removing protected attributes enough to make a model fair?", answer: "No. Other features can act as proxies, and labels may carry historical bias. It can also stop you from measuring the problem. I would evaluate outcomes by group, examine the label and data sources, choose fairness criteria with stakeholders, and document the trade-offs and remaining risks." },
+    related: ["evaluation-metrics", "monitoring-and-drift", "train-validation-test"],
+    miniProject: { title: "Audit a model and write its card", objective: "Run a group-level audit, then document what you found.", tasks: ["Train a classifier on the Adult Income dataset from OpenML.", "Use Fairlearn\u2019s `MetricFrame` to report selection rate, TPR, and FPR by sex and race, along with counts.", "Try one mitigation, such as group-specific thresholds, and quantify its cost in overall accuracy.", "Write a one-page model card covering intended use, out-of-scope uses, results by group, and limitations."], extension: "Bootstrap confidence intervals for your group metrics, and decide which gaps are large enough to matter." }
+  }
+];
+
+// src/content/deepLearningLessons.ts
 var deepLearningLessons = [
   {
     number: "09",
@@ -727,7 +1628,8 @@ var deepLearningLessons = [
     ],
     formula: "\\operatorname{ReLU}(z)=\\max(0,z) \\qquad \\operatorname{softmax}(z_i)=\\frac{e^{z_i}}{\\sum_j e^{z_j}} \\qquad L_{CE}=-\\ln p_{\\text{correct}}",
     formulaExplanation: "ReLU gates each scalar. Softmax converts a vector of logits into probabilities. Cross-entropy is large when the model assigns a small probability to the correct class.",
-    code: 'import torch\nimport torch.nn.functional as F\n\n# Compare common activations on the same pre-activation values\nvalues = torch.tensor([-2.0, 0.0, 2.0])\nprint("ReLU:", F.relu(values).tolist())\nprint("sigmoid at zero:", torch.sigmoid(torch.tensor(0.0)).item())\nprint("tanh at zero:", torch.tanh(torch.tensor(0.0)).item())\n\n# Multi-class classification uses raw logits and a class index\nlogits = torch.tensor([[2.0, 0.5, -1.0]])\ntarget = torch.tensor([0])\nprobabilities = torch.softmax(logits, dim=1)\nloss = F.cross_entropy(logits, target)\nprint("probabilities:", probabilities.round(decimals=3).tolist())\nprint("cross-entropy:", round(loss.item(), 3))',
+    code: 'import torch\nimport torch.nn.functional as F\n\n# Compare common activations on the same pre-activation values\nvalues = torch.tensor([-2.0, 0.0, 2.0])\nprint("ReLU:", F.relu(values).tolist())\nprint("sigmoid at zero:", torch.sigmoid(torch.tensor(0.0)).item())\nprint("tanh at zero:", torch.tanh(torch.tensor(0.0)).item())\n\n# Multi-class classification uses raw logits and a class index\nlogits = torch.tensor([[2.0, 0.5, -1.0]])\ntarget = torch.tensor([0])\nprobabilities = torch.softmax(logits, dim=1)\nloss = F.cross_entropy(logits, target)\nprint("probabilities:", [round(p, 3) for p in probabilities[0].tolist()])\nprint("cross-entropy:", round(loss.item(), 3))',
+    codeOutput: "ReLU: [0.0, 0.0, 2.0]\nsigmoid at zero: 0.5\ntanh at zero: 0.0\nprobabilities: [0.786, 0.175, 0.039]\ncross-entropy: 0.241",
     codeExplanation: "The first tensor contains pre-activation values. ReLU zeros negatives; sigmoid and tanh apply their smooth mappings. The final block keeps the raw class scores in `logits`, calculates probabilities only for inspection, and passes logits plus the correct class index to cross-entropy. `dim=1` means normalize across the class dimension.",
     practice: [
       { prompt: "Apply ReLU to z=[\u22123,0,2]. Why is this not just another linear layer?", answer: "[0,0,2]; the zeroing rule is nonlinear.", solution: "ReLU(z)=max(0,z) element by element. Negative values and zero become 0, while 2 remains 2. This piecewise rule cannot be represented by one matrix multiplication plus bias over the whole input range, so it adds nonlinear capacity." },
@@ -780,7 +1682,7 @@ var deepLearningLessons = [
     title: "Backpropagation: assigning credit for error",
     description: "Use the chain rule to trace how each parameter contributed to a prediction error, then verify the update with PyTorch autograd.",
     module: "Deep learning",
-    difficulty: "Beginner",
+    difficulty: "Intermediate",
     estimatedMinutes: 22,
     prerequisites: ["forward-propagation", "gradient-descent"],
     objectives: ["Calculate a derivative through a tiny model by hand.", "Explain why gradients flow backward through layers.", "Use PyTorch autograd and update a parameter safely."],
@@ -794,9 +1696,9 @@ var deepLearningLessons = [
     ],
     formula: "\\frac{\\partial L}{\\partial w}=\\frac{\\partial L}{\\partial \\hat{y}}\\frac{\\partial \\hat{y}}{\\partial w}=2(wx-y)x",
     formulaExplanation: "For L=(wx\u2212y)\xB2, differentiate the outer square first, then multiply by how the prediction changes with w. This is the chain rule in a one-weight network.",
-    code: 'import torch\n\n# One learnable scalar and one training example\nweight = torch.tensor(1.0, requires_grad=True)\nfeature = torch.tensor(2.0)\ntarget = torch.tensor(4.0)\nlearning_rate = 0.1\n\n# Forward pass: prediction=2, squared loss=4\nprediction = weight * feature\nloss = (prediction - target) ** 2\n\n# Backward pass computes d(loss)/d(weight)\nloss.backward()\nprint("prediction:", prediction.item())\nprint("loss:", loss.item())\nprint("gradient:", weight.grad.item())\n\n# Update parameters without recording the update in the graph\nwith torch.no_grad():\n    weight -= learning_rate * weight.grad\n\n# Clear this gradient before another backward pass\nweight.grad = None\nnew_loss = (weight * feature - target) ** 2\nprint("updated weight:", weight.item())\nprint("new loss:", new_loss.item())',
-    codeOutput: "prediction: 2.0\nloss: 4.0\ngradient: -8.0\nupdated weight: 1.8\nnew loss: 0.1599999964237213",
-    codeExplanation: "`requires_grad=True` marks the weight for differentiation. The forward operations build a graph. `loss.backward()` applies the chain rule and stores \u22128 in `weight.grad`. The `no_grad` block applies the explicit gradient-descent update without adding that mutation to the graph. Clearing `.grad` matters because PyTorch adds new gradients to existing ones. Small floating-point rounding explains the final printed decimal.",
+    code: 'import torch\n\n# One learnable scalar and one training example\nweight = torch.tensor(1.0, requires_grad=True)\nfeature = torch.tensor(2.0)\ntarget = torch.tensor(4.0)\nlearning_rate = 0.1\n\n# Forward pass: prediction=2, squared loss=4\nprediction = weight * feature\nloss = (prediction - target) ** 2\n\n# Backward pass computes d(loss)/d(weight)\nloss.backward()\nprint("prediction:", prediction.item())\nprint("loss:", loss.item())\nprint("gradient:", weight.grad.item())\n\n# Update parameters without recording the update in the graph\nwith torch.no_grad():\n    weight -= learning_rate * weight.grad\n\n# Clear this gradient before another backward pass\nweight.grad = None\nnew_loss = (weight * feature - target) ** 2\nprint("updated weight:", round(weight.item(), 4))\nprint("new loss:", round(new_loss.item(), 4))',
+    codeOutput: "prediction: 2.0\nloss: 4.0\ngradient: -8.0\nupdated weight: 1.8\nnew loss: 0.16",
+    codeExplanation: "`requires_grad=True` marks the weight for differentiation. The forward operations build a graph. `loss.backward()` applies the chain rule and stores \u22128 in `weight.grad`. The `no_grad` block applies the explicit gradient-descent update without adding that mutation to the graph. Clearing `.grad` matters because PyTorch adds new gradients to existing ones. The last two prints round to four decimals because 32-bit floats would otherwise show rounding noise such as 1.7999999523.",
     practice: [
       { prompt: "For prediction \u0177=wx, x=3, w=2, and target 8, find the prediction, squared loss, and dL/dw.", answer: "Prediction 6, loss 4, gradient \u221212.", solution: "\u0177=wx=2(3)=6. L=(6\u22128)\xB2=4. The derivative is dL/dw=2(wx\u2212y)x=2(6\u22128)(3)=\u221212." },
       { prompt: "Why does PyTorch training code call `optimizer.zero_grad()` before `loss.backward()`?", answer: "PyTorch accumulates gradients, so clearing prevents gradients from earlier batches being added accidentally.", solution: "The `.grad` field is an accumulator. If it is not cleared, the next call to backward adds the new batch gradient to the previous batch\u2019s value. Standard independent mini-batch updates require clearing before each backward pass." },
@@ -814,7 +1716,7 @@ var deepLearningLessons = [
     title: "Optimizers: choosing how parameters move",
     description: "Gradient descent supplies a direction; optimizers shape the size, memory, and adaptivity of each training step.",
     module: "Deep learning",
-    difficulty: "Beginner",
+    difficulty: "Intermediate",
     estimatedMinutes: 20,
     prerequisites: ["backpropagation"],
     objectives: ["Distinguish a gradient from an optimizer update.", "Explain SGD, momentum, RMSprop, and Adam intuitively.", "Choose a learning rate and diagnose common training curves."],
@@ -829,6 +1731,7 @@ var deepLearningLessons = [
     formula: "v_t=\\beta v_{t-1}+g_t \\qquad w_{t+1}=w_t-\\eta v_t",
     formulaExplanation: "g\u209C is the current gradient, \u03B2 controls how much momentum is retained, and \u03B7 (eta) is the learning rate. Adam adds a second moving average of squared gradients and bias correction.",
     code: 'import torch\n\n# Compare common optimizers on the same one-dimensional bowl\noptimizers = {\n    "SGD": lambda parameter: torch.optim.SGD([parameter], lr=0.1),\n    "Momentum": lambda parameter: torch.optim.SGD(\n        [parameter], lr=0.1, momentum=0.9\n    ),\n    "RMSprop": lambda parameter: torch.optim.RMSprop([parameter], lr=0.05),\n    "Adam": lambda parameter: torch.optim.Adam([parameter], lr=0.1),\n}\n\nfor name, make_optimizer in optimizers.items():\n    weight = torch.nn.Parameter(torch.tensor(-2.0))\n    optimizer = make_optimizer(weight)\n\n    for _ in range(80):\n        optimizer.zero_grad()\n        loss = (weight - 3.0) ** 2  # minimum is at weight=3\n        loss.backward()\n        optimizer.step()\n\n    print(f"{name}: weight={weight.item():.3f}")',
+    codeOutput: "SGD: weight=3.000\nMomentum: weight=2.946\nRMSprop: weight=2.843\nAdam: weight=2.944",
     codeExplanation: "Each optimizer receives a fresh scalar parameter initialized to \u22122 and sees the same differentiable loss. The loop uses the standard clear, compute, backward, step order. Their paths and convergence speeds differ because their state and step rules differ. The target minimum is 3; on a real model, compare validation results as well as training loss.",
     practice: [
       { prompt: "Two consecutive gradients point in nearly the same direction. Which optimizer idea can build speed in that direction?", answer: "Momentum.", solution: "Momentum accumulates a moving average of recent gradients. Consistent directions reinforce one another; changing directions partially cancel." },
@@ -847,7 +1750,7 @@ var deepLearningLessons = [
     title: "CNNs: learning local patterns in images",
     description: "Convolutions reuse small filters across an image so a network can detect edges and patterns wherever they appear.",
     module: "Deep learning",
-    difficulty: "Beginner",
+    difficulty: "Intermediate",
     estimatedMinutes: 22,
     prerequisites: ["forward-propagation", "activation-functions-and-losses"],
     objectives: ["Explain a kernel, feature map, stride, and padding.", "Calculate a tiny convolution by hand.", "Read image tensor shapes in PyTorch."],
@@ -881,7 +1784,7 @@ var deepLearningLessons = [
     title: "RNNs and LSTMs: carrying context through a sequence",
     description: "Sequence models reuse a hidden state from one time step to the next; gated variants learn what to remember and forget.",
     module: "Deep learning",
-    difficulty: "Beginner",
+    difficulty: "Intermediate",
     estimatedMinutes: 23,
     prerequisites: ["forward-propagation", "backpropagation"],
     objectives: ["Trace a recurrent hidden-state update.", "Distinguish RNN, LSTM, and GRU at a high level.", "Understand sequence tensor shapes and vanishing gradients."],
@@ -915,7 +1818,7 @@ var deepLearningLessons = [
     title: "Attention: deciding which context matters",
     description: "Attention lets each token retrieve a weighted mixture of information from other tokens instead of compressing everything into one state.",
     module: "Deep learning",
-    difficulty: "Beginner",
+    difficulty: "Intermediate",
     estimatedMinutes: 22,
     prerequisites: ["recurrent-neural-networks", "forward-propagation"],
     objectives: ["Explain query, key, and value with a retrieval analogy.", "Calculate a two-token scaled dot-product attention example.", "Explain why multi-head attention uses several learned views."],
@@ -929,7 +1832,7 @@ var deepLearningLessons = [
     ],
     formula: "\\operatorname{Attention}(Q,K,V)=\\operatorname{softmax}\\left(\\frac{QK^\\top}{\\sqrt{d_k}}\\right)V",
     formulaExplanation: "Q contains queries, K keys, V values, and d\u2096 is the key-vector width. The matrix before V contains one attention distribution per query position.",
-    code: 'import math\nimport torch\n\n# Two query positions, two keys, and one value per key\nqueries = torch.tensor([[1.0], [0.0]])\nkeys = torch.tensor([[1.0], [2.0]])\nvalues = torch.tensor([[10.0], [20.0]])\n\n# Score each query against each key, then normalize over keys\nkey_width = keys.shape[-1]\nscores = queries @ keys.T / math.sqrt(key_width)\nweights = torch.softmax(scores, dim=-1)\ncontext = weights @ values\nprint("attention weights:", weights.round(decimals=3).tolist())\nprint("context:", context.round(decimals=2).squeeze(-1).tolist())',
+    code: 'import math\nimport torch\n\n# Two query positions, two keys, and one value per key\nqueries = torch.tensor([[1.0], [0.0]])\nkeys = torch.tensor([[1.0], [2.0]])\nvalues = torch.tensor([[10.0], [20.0]])\n\n# Score each query against each key, then normalize over keys\nkey_width = keys.shape[-1]\nscores = queries @ keys.T / math.sqrt(key_width)\nweights = torch.softmax(scores, dim=-1)\ncontext = weights @ values\nprint("attention weights:", [[round(w, 3) for w in row] for row in weights.tolist()])\nprint("context:", [round(c, 2) for c in context.squeeze(-1).tolist()])',
     codeOutput: "attention weights: [[0.269, 0.731], [0.5, 0.5]]\ncontext: [17.31, 15.0]",
     codeExplanation: "`queries @ keys.T` creates one score per query-key pair. The scaling uses the last dimension of keys. Softmax runs across keys (`dim=-1`), so each row sums to one. Multiplying by values forms a weighted context for each query. Real models learn vector-valued Q/K/V projections and use multiple heads.",
     practice: [
@@ -949,7 +1852,7 @@ var deepLearningLessons = [
     title: "Transformers: building a language model from attention",
     description: "Combine token and position embeddings, attention, feed-forward layers, residual paths, and normalization into a stack that predicts tokens.",
     module: "Deep learning",
-    difficulty: "Beginner",
+    difficulty: "Intermediate",
     estimatedMinutes: 26,
     prerequisites: ["attention-mechanism", "activation-functions-and-losses"],
     objectives: ["Name the main parts of a transformer block.", "Explain why token order needs positional information.", "Trace a prompt through a small causal transformer to next-token logits."],
@@ -980,8 +1883,248 @@ var deepLearningLessons = [
   }
 ];
 
-// server/src/content/lessons.ts
-var lessons = [
+// src/content/lessonExtras.ts
+var crashCourse = { title: "Machine Learning Crash Course", url: "https://developers.google.com/machine-learning/crash-course", note: "Google\u2019s free introduction, with short exercises." };
+var d2l = (title, path, note) => ({ title, url: `https://d2l.ai/${path}`, note });
+var sklearn = (title, path, note) => ({ title, url: `https://scikit-learn.org/stable/${path}`, note });
+var arxiv = (title, id, note) => ({ title, url: `https://arxiv.org/abs/${id}`, note });
+var lessonExtras = {
+  "what-is-machine-learning": {
+    commonMistakes: [
+      { mistake: "Reaching for ML when a simple rule would do.", fix: "If you can write the rule and it stays stable, write it. It is cheaper to run, easier to test, and simpler to explain. Use ML when the rules are too many or keep changing." },
+      { mistake: "Judging a model by how it does on its training examples.", fix: "A model can memorize what it has seen. Always evaluate on examples held back from training." },
+      { mistake: "Treating a prediction as a fact.", fix: "Outputs are estimates shaped by the training data. Decide what happens when the model is wrong before you rely on it." }
+    ],
+    furtherReading: [crashCourse, { title: "Rules of Machine Learning", url: "https://developers.google.com/machine-learning/guides/rules-of-ml", note: "Practical advice, starting with whether you need ML at all." }]
+  },
+  "supervised-vs-unsupervised": {
+    commonMistakes: [
+      { mistake: "Naming clusters and treating the names as discovered truth.", fix: "Cluster ids are arbitrary. Inspect the members, test stability across runs, and check whether the groups help a real decision." },
+      { mistake: "Clustering without scaling features.", fix: "Distance-based methods let large-range features dominate. Standardize first unless the raw scale is meaningful." },
+      { mistake: "Assuming supervised is always better because it has labels.", fix: "Labels can be expensive, noisy, or biased. Check how the labels were produced before trusting what they teach." }
+    ],
+    furtherReading: [sklearn("Supervised learning guide", "supervised_learning.html", "A map of supervised methods with examples."), sklearn("Unsupervised learning guide", "unsupervised_learning.html", "Clustering, decomposition, and density estimation.")]
+  },
+  "train-validation-test": {
+    commonMistakes: [
+      { mistake: "Checking the test score repeatedly while tuning.", fix: "Each look makes the estimate more optimistic. Tune on validation data, and open the test set once." },
+      { mistake: "Fitting preprocessing before splitting.", fix: "Split first, then fit scalers and imputers inside a pipeline so they only see training rows." },
+      { mistake: "Random splits on grouped or time-ordered data.", fix: "Keep one person\u2019s records on one side using `GroupKFold`, and use `TimeSeriesSplit` when predicting the future." }
+    ],
+    furtherReading: [sklearn("Cross-validation", "modules/cross_validation.html", "Splitters for groups, time series, and stratification."), sklearn("Common pitfalls and recommended practices", "common_pitfalls.html", "Worked examples of leakage and how to avoid it.")]
+  },
+  "linear-regression": {
+    commonMistakes: [
+      { mistake: "Reading coefficients as causal effects.", fix: "A coefficient describes association given the other features. Causal claims need a design that supports them." },
+      { mistake: "Comparing coefficients across unscaled features.", fix: "A weight depends on its feature\u2019s units. Standardize features before comparing their sizes." },
+      { mistake: "Trusting a high R\xB2 without looking at residuals.", fix: "Plot residuals against predictions. A curve or a fan shape means the model is missing structure, whatever the score says." }
+    ],
+    furtherReading: [sklearn("Linear models", "modules/linear_model.html", "Ordinary least squares, Ridge, Lasso, and logistic regression."), crashCourse]
+  },
+  "logistic-regression": {
+    commonMistakes: [
+      { mistake: "Treating predicted probabilities as calibrated by default.", fix: "Regularization and imbalance can distort probabilities. Check with a calibration curve before acting on the exact values." },
+      { mistake: "Accepting the 0.5 threshold automatically.", fix: "Choose the threshold on validation data, based on what each kind of mistake costs." },
+      { mistake: "Forgetting that the regularization default affects your weights.", fix: "scikit-learn applies L2 by default. Scale features and tune `C`, especially when you plan to interpret the coefficients." }
+    ],
+    furtherReading: [sklearn("Logistic regression in scikit-learn", "modules/linear_model.html#logistic-regression", "Solvers, penalties, and multiclass options."), sklearn("Probability calibration", "modules/calibration.html", "How to check and correct predicted probabilities.")]
+  },
+  "decision-trees-and-ensembles": {
+    commonMistakes: [
+      { mistake: "Letting a single tree grow without limits.", fix: "Set `max_depth` or `min_samples_leaf` and tune them with cross-validation." },
+      { mistake: "Trusting impurity-based feature importance.", fix: "It favors high-cardinality features and is computed on training data. Prefer permutation importance on held-out data." },
+      { mistake: "Expecting trees to extrapolate.", fix: "Tree predictions stay within the range of training targets. For trending data, add features that capture the trend or use a linear component." }
+    ],
+    furtherReading: [sklearn("Decision trees", "modules/tree.html", "How they work, with practical tips."), sklearn("Ensemble methods", "modules/ensemble.html", "Random forests, gradient boosting, and histogram-based boosting."), { title: "Introduction to Boosted Trees", url: "https://xgboost.readthedocs.io/en/stable/tutorials/model.html", note: "A clear derivation of the boosting objective." }]
+  },
+  "feature-engineering-and-pipelines": {
+    commonMistakes: [
+      { mistake: "Preprocessing the whole dataset, then cross-validating.", fix: "Put every learned step in a `Pipeline` and pass that to `cross_val_score`." },
+      { mistake: "Using a feature that is not available at prediction time.", fix: "For every column, ask when it is recorded. Anything recorded after the outcome is leakage." },
+      { mistake: "Letting a new category crash production.", fix: 'Use `OneHotEncoder(handle_unknown="ignore")` and test with an unseen value.' }
+    ],
+    furtherReading: [sklearn("Pipelines and composite estimators", "modules/compose.html", "Pipeline and ColumnTransformer in depth."), sklearn("Preprocessing data", "modules/preprocessing.html", "Scaling, encoding, and transformations.")]
+  },
+  "gradient-descent": {
+    commonMistakes: [
+      { mistake: "Blaming the model when the learning rate is the problem.", fix: "Plot the loss. If it rises or oscillates, lower the rate before changing anything else." },
+      { mistake: "Skipping feature scaling.", fix: "Very different feature scales create a long, narrow loss surface that converges slowly. Standardize inputs first." },
+      { mistake: "Assuming lower training loss means a better model.", fix: "Track validation loss too. Training loss can keep falling while the model gets worse on new data." }
+    ],
+    furtherReading: [d2l("Optimization Algorithms", "chapter_optimization/index.html", "From gradient descent to modern optimizers, with code."), { title: "Deep Learning, Chapter 8", url: "https://www.deeplearningbook.org/contents/optimization.html", note: "A rigorous treatment from Goodfellow, Bengio, and Courville." }]
+  },
+  "overfitting-underfitting": {
+    commonMistakes: [
+      { mistake: "Adding regularization before checking for leakage or duplicates.", fix: "Duplicates across splits and leakage distort the gap. Audit the data first." },
+      { mistake: "Reading a small validation set as precise.", fix: "With few examples, a score moves a lot by chance. Use cross-validation or report uncertainty." },
+      { mistake: "Calling it overfitting when both errors are high.", fix: "High training and validation error is underfitting. Use more capacity or better features rather than more regularization." }
+    ],
+    furtherReading: [sklearn("Validation curves and learning curves", "modules/learning_curve.html", "How to plot the diagnostics from this lesson."), crashCourse]
+  },
+  "evaluation-metrics": {
+    commonMistakes: [
+      { mistake: "Reporting accuracy on imbalanced data.", fix: "Show the confusion matrix, with precision and recall for the class you care about." },
+      { mistake: "Choosing the threshold on the test set.", fix: "Choose it on validation data, then report once on the test set." },
+      { mistake: "Optimizing a metric the business does not care about.", fix: "Agree on the costs of each error first, then pick the metric that reflects them." }
+    ],
+    furtherReading: [sklearn("Metrics and scoring", "modules/model_evaluation.html", "Every common metric, and how to choose one."), { title: "ML Glossary", url: "https://developers.google.com/machine-learning/glossary", note: "Short, precise definitions of the terms in this lesson." }]
+  },
+  "neural-networks": {
+    commonMistakes: [
+      { mistake: "Starting with a large network.", fix: "First overfit a tiny batch with a small network. If that fails, you have a bug, and more layers will only hide it." },
+      { mistake: "Applying softmax or sigmoid before a loss that expects logits.", fix: "`CrossEntropyLoss` and `BCEWithLogitsLoss` take raw logits. Applying an activation first quietly hurts training." },
+      { mistake: "Forgetting `optimizer.zero_grad()`.", fix: "PyTorch accumulates gradients, so clear them at each step or they mix across batches." }
+    ],
+    furtherReading: [{ title: "Neural Networks and Deep Learning", url: "http://neuralnetworksanddeeplearning.com/", note: "A free book by Michael Nielsen that builds intuition step by step." }, d2l("Dive into Deep Learning", "", "A free, interactive textbook with runnable code.")]
+  },
+  "perceptrons": {
+    commonMistakes: [
+      { mistake: "Expecting a single perceptron to solve XOR.", fix: "It only draws one straight boundary. XOR needs a hidden layer or a feature that makes the data separable." },
+      { mistake: "Forgetting the bias term.", fix: "Without a bias, the boundary must pass through the origin, which many problems do not allow." },
+      { mistake: "Running the perceptron rule on data that is not separable.", fix: "The classic rule never settles in that case. Use a soft output with a differentiable loss instead." }
+    ],
+    furtherReading: [sklearn("Perceptron in scikit-learn", "modules/linear_model.html#perceptron", "A practical implementation to experiment with."), { title: "Deep Learning, Chapter 6", url: "https://www.deeplearningbook.org/contents/mlp.html", note: "Covers why XOR needs hidden layers." }]
+  },
+  "activation-functions-and-losses": {
+    commonMistakes: [
+      { mistake: "Using sigmoid in all hidden layers of a deep network.", fix: "Saturation shrinks gradients. Use ReLU or GELU in hidden layers." },
+      { mistake: "Using MSE for classification.", fix: "Cross-entropy gives stronger gradients for confident mistakes and matches a probabilistic output." },
+      { mistake: "Passing probabilities to a loss that expects logits.", fix: "Read the loss documentation. Applying softmax twice compresses outputs and slows learning." }
+    ],
+    furtherReading: [{ title: "PyTorch loss functions", url: "https://pytorch.org/docs/stable/nn.html#loss-functions", note: "Exact inputs each loss expects." }, d2l("Multilayer perceptrons", "chapter_multilayer-perceptrons/index.html", "Activations and losses in working code.")]
+  },
+  "forward-propagation": {
+    commonMistakes: [
+      { mistake: "Ignoring tensor shapes until an error appears.", fix: "Write the expected shape of each layer as a comment, and print them on the first batch." },
+      { mistake: "Silent broadcasting between mismatched shapes.", fix: "A target of shape (n) against predictions of shape (n, 1) can broadcast to (n, n). Check that they match before computing a loss." },
+      { mistake: "Leaving a model in training mode for inference.", fix: "Call `model.eval()` and use `torch.no_grad()` so dropout and BatchNorm behave correctly." }
+    ],
+    furtherReading: [d2l("Forward and backward propagation", "chapter_multilayer-perceptrons/backprop.html", "A computational-graph view of the pass."), { title: "torch.nn documentation", url: "https://pytorch.org/docs/stable/nn.html", note: "Reference for layers and their expected shapes." }]
+  },
+  "backpropagation": {
+    commonMistakes: [
+      { mistake: "Believing backward() updates the weights.", fix: "It only computes gradients. The update happens in `optimizer.step()`." },
+      { mistake: "Breaking the graph by accident.", fix: "Calling `.item()`, `.detach()`, or converting to NumPy mid-computation stops gradients from flowing." },
+      { mistake: "Ignoring exploding or vanishing gradients.", fix: "Log gradient norms. Use residual connections, normalization, and gradient clipping when needed." }
+    ],
+    furtherReading: [{ title: "Automatic differentiation with torch.autograd", url: "https://pytorch.org/tutorials/beginner/basics/autogradqs_tutorial.html", note: "The official PyTorch tutorial." }, { title: "Neural Networks and Deep Learning, Chapter 2", url: "http://neuralnetworksanddeeplearning.com/chap2.html", note: "A careful, intuitive derivation." }]
+  },
+  "optimizers": {
+    commonMistakes: [
+      { mistake: "Comparing optimizers with one shared learning rate.", fix: "Each needs its own rate. Run a short sweep for each before comparing." },
+      { mistake: "Combining L2 with Adam and expecting true weight decay.", fix: "Use AdamW, which decouples weight decay from the adaptive update." },
+      { mistake: "Never reducing the learning rate.", fix: "A schedule, such as cosine decay, often improves the final result." }
+    ],
+    furtherReading: [arxiv("Adam: A Method for Stochastic Optimization", "1412.6980", "The original paper."), { title: "torch.optim documentation", url: "https://pytorch.org/docs/stable/optim.html", note: "Optimizers and learning-rate schedulers." }]
+  },
+  "convolutional-neural-networks": {
+    commonMistakes: [
+      { mistake: "Getting the flattened size wrong before a linear layer.", fix: "Use `nn.AdaptiveAvgPool2d(1)`, so the size no longer depends on the input resolution." },
+      { mistake: "Training from scratch on a small dataset.", fix: "Start with a pretrained backbone. See the transfer learning lesson." },
+      { mistake: "Assuming CNNs handle rotation and scale automatically.", fix: "Convolution is translation-equivariant only. Use augmentation to teach other kinds of invariance." }
+    ],
+    furtherReading: [d2l("Convolutional neural networks", "chapter_convolutional-neural-networks/index.html", "Convolution, padding, and pooling with code."), arxiv("Deep Residual Learning for Image Recognition", "1512.03385", "The ResNet paper.")]
+  },
+  "recurrent-neural-networks": {
+    commonMistakes: [
+      { mistake: "Confusing `batch_first` shapes.", fix: "PyTorch RNNs default to (sequence, batch, features). Set `batch_first=True` when your data is arranged that way." },
+      { mistake: "Skipping gradient clipping.", fix: "Recurrent gradients can explode. Use `clip_grad_norm_` before the optimizer step." },
+      { mistake: "Including padding in the loss.", fix: "Pack sequences or mask padded positions so they do not count." }
+    ],
+    furtherReading: [d2l("Long short-term memory", "chapter_recurrent-modern/lstm.html", "LSTM gates, with implementations."), { title: "Understanding LSTM Networks", url: "https://colah.github.io/posts/2015-08-Understanding-LSTMs/", note: "A widely loved visual explanation." }]
+  },
+  "attention-mechanism": {
+    commonMistakes: [
+      { mistake: "Reading attention weights as a full explanation.", fix: "They show where the model mixed information, not why it made a decision. Validate any interpretation." },
+      { mistake: "Forgetting padding masks.", fix: "Without a mask, tokens attend to padding, which degrades results and can change with batch composition." },
+      { mistake: "Using the wrong causal mask direction.", fix: "A token must not see future tokens during training. Test this with a small example." }
+    ],
+    furtherReading: [arxiv("Neural Machine Translation by Jointly Learning to Align and Translate", "1409.0473", "The paper that popularized attention."), d2l("Attention mechanisms and transformers", "chapter_attention-mechanisms-and-transformers/index.html", "From queries and keys to transformers.")]
+  },
+  "transformers": {
+    commonMistakes: [
+      { mistake: "Forgetting positional information.", fix: "Attention alone ignores order. Add positional embeddings or encodings." },
+      { mistake: "Training a large transformer from scratch.", fix: "For most tasks, start from a pretrained model and fine-tune it." },
+      { mistake: "Skipping learning-rate warmup.", fix: "Transformers often benefit from warmup, so that early large gradients do not destabilize training." }
+    ],
+    furtherReading: [arxiv("Attention Is All You Need", "1706.03762", "The original transformer paper."), { title: "The Illustrated Transformer", url: "https://jalammar.github.io/illustrated-transformer/", note: "A popular visual walkthrough." }]
+  },
+  "image-data-and-augmentation": {
+    commonMistakes: [
+      { mistake: "Mixing up RGB and BGR, or channel order.", fix: "OpenCV loads BGR, and some tools put channels last. Plot a tensor just before it enters the model." },
+      { mistake: "Augmenting validation data randomly.", fix: "Use only deterministic resizing and normalization for evaluation." },
+      { mistake: "Using augmentations that change the label.", fix: "Ask whether a person would give the transformed image the same label. For detection, transform the boxes too." }
+    ],
+    furtherReading: [d2l("Image augmentation", "chapter_computer-vision/image-augmentation.html", "Effects of each augmentation, with code."), { title: "torchvision transforms", url: "https://pytorch.org/vision/stable/transforms.html", note: "The standard augmentation toolkit in PyTorch." }]
+  },
+  "transfer-learning": {
+    commonMistakes: [
+      { mistake: "Fine-tuning with a high learning rate.", fix: "Use something like 1e-5 for pretrained layers and a higher rate for the new head." },
+      { mistake: "Using the wrong preprocessing for the weights.", fix: "Apply the resize and normalization the pretrained weights expect; torchvision publishes them with each set of weights." },
+      { mistake: "Forgetting BatchNorm statistics while frozen.", fix: "Running statistics still update in training mode, so set frozen BatchNorm layers to `eval()`." }
+    ],
+    furtherReading: [{ title: "Transfer learning for computer vision", url: "https://pytorch.org/tutorials/beginner/transfer_learning_tutorial.html", note: "The official PyTorch tutorial." }, d2l("Fine-tuning", "chapter_computer-vision/fine-tuning.html", "A worked example with discriminative learning rates.")]
+  },
+  "object-detection-and-segmentation": {
+    commonMistakes: [
+      { mistake: "Comparing mAP values computed differently.", fix: "mAP at IoU 0.5 is far easier than COCO\u2019s 0.5:0.95. Always state the definition." },
+      { mistake: "Flipping images without flipping boxes or masks.", fix: "Use a library that transforms them together, and draw a few samples to check." },
+      { mistake: "Running NMS across all classes at once.", fix: "Run it per class, so that overlapping objects of different classes both survive." }
+    ],
+    furtherReading: [arxiv("Faster R-CNN", "1506.01497", "A foundational two-stage detector."), arxiv("U-Net", "1505.04597", "The classic segmentation architecture."), d2l("Object detection and bounding boxes", "chapter_computer-vision/bounding-box.html", "A practical introduction, with code.")]
+  },
+  "tokenization-and-embeddings": {
+    commonMistakes: [
+      { mistake: "Using a tokenizer that does not match the model.", fix: "Load both from the same checkpoint. A mismatch does not raise an error; results are simply garbage." },
+      { mistake: "Estimating cost from word counts.", fix: "Billing and limits use tokens, so count them with the model\u2019s own tokenizer." },
+      { mistake: "Comparing embeddings from different models.", fix: "Vectors from different models live in unrelated spaces, so changing models means re-embedding everything." }
+    ],
+    furtherReading: [{ title: "Hugging Face LLM Course: Tokenizers", url: "https://huggingface.co/learn/llm-course/chapter6/1", note: "How BPE and other algorithms work, with code." }, arxiv("Neural Machine Translation of Rare Words with Subword Units", "1508.07909", "The paper that brought BPE to neural models."), arxiv("Efficient Estimation of Word Representations", "1301.3781", "The word2vec paper.")]
+  },
+  "how-llms-generate-text": {
+    commonMistakes: [
+      { mistake: "Treating low temperature as a truth setting.", fix: "It only makes output more predictable. A confident error stays an error; use sources and evaluations." },
+      { mistake: "Treating a fluent answer as a correct one.", fix: "Build an evaluation set for your task, and verify citations and numbers." },
+      { mistake: "Treating retrieved or user content as trusted.", fix: "It can contain instructions. Separate it from your instructions and limit what the model can do with it." }
+    ],
+    furtherReading: [arxiv("The Curious Case of Neural Text Degeneration", "1904.09751", "The paper that introduced nucleus (top-p) sampling."), { title: "Generation strategies", url: "https://huggingface.co/docs/transformers/main/en/generation_strategies", note: "Practical decoding options in Hugging Face Transformers." }, arxiv("Language Models are Few-Shot Learners", "2005.14165", "The GPT-3 paper.")]
+  },
+  "retrieval-augmented-generation": {
+    commonMistakes: [
+      { mistake: "Tuning the prompt before checking retrieval.", fix: "Log retrieved chunks and measure recall@k first. A prompt cannot fix a missing passage." },
+      { mistake: "Using one fixed chunk size for every document type.", fix: "Split on structure, and handle tables and code separately." },
+      { mistake: "Forgetting access control.", fix: "Filter by user permission during retrieval, so private documents never reach the prompt." }
+    ],
+    furtherReading: [arxiv("Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks", "2005.11401", "The original RAG paper."), { title: "Ragas documentation", url: "https://docs.ragas.io/", note: "Tools for measuring faithfulness and retrieval quality." }]
+  },
+  "serving-models": {
+    commonMistakes: [
+      { mistake: "Loading pickle files from untrusted sources.", fix: "Pickle can run arbitrary code on load. Only load artifacts you produced, or use a safer format such as ONNX or safetensors." },
+      { mistake: "Re-implementing preprocessing in the service.", fix: "Ship one pipeline with the model, so training and serving cannot drift apart." },
+      { mistake: "Reporting only average latency.", fix: "Track p50, p95, and p99 under realistic load." }
+    ],
+    furtherReading: [{ title: "FastAPI documentation", url: "https://fastapi.tiangolo.com/", note: "A popular Python framework with built-in validation." }, { title: "ONNX Runtime documentation", url: "https://onnxruntime.ai/docs/", note: "Portable, optimized model inference." }, { title: "Rules of Machine Learning", url: "https://developers.google.com/machine-learning/guides/rules-of-ml", note: "Hard-won production lessons." }]
+  },
+  "monitoring-and-drift": {
+    commonMistakes: [
+      { mistake: "Monitoring only service health.", fix: "A model can be up and wrong. Add data, prediction, and outcome checks." },
+      { mistake: "Retraining as the first response to any alert.", fix: "Diagnose first. Retraining on a broken pipeline teaches the model the bug." },
+      { mistake: "Alerting on every statistically significant change.", fix: "Large samples flag trivial differences. Use effect sizes tied to an action." }
+    ],
+    furtherReading: [{ title: "Monitoring Distributed Systems", url: "https://sre.google/sre-book/monitoring-distributed-systems/", note: "Google\u2019s SRE chapter on what to alert on." }, { title: "Rules of Machine Learning", url: "https://developers.google.com/machine-learning/guides/rules-of-ml", note: "Includes guidance on monitoring and training-serving skew." }]
+  },
+  "responsible-ai": {
+    commonMistakes: [
+      { mistake: "Only reporting overall metrics.", fix: "Break results down by relevant groups, with counts and confidence intervals." },
+      { mistake: "Assuming that removing a sensitive column removes bias.", fix: "Audit outcomes by group, and look for proxy features and biased labels." },
+      { mistake: "Leaving the fairness choice implicit.", fix: "Write down which criteria you chose, why, who decided, and what the trade-offs are." }
+    ],
+    furtherReading: [arxiv("Model Cards for Model Reporting", "1810.03993", "The paper behind model documentation."), { title: "Fairness and Machine Learning", url: "https://fairmlbook.org/", note: "A free book on the limits and opportunities of fair ML." }, { title: "NIST AI Risk Management Framework", url: "https://www.nist.gov/itl/ai-risk-management-framework", note: "A widely used framework for managing AI risk." }]
+  }
+};
+
+// src/content/lessons.ts
+var lessonDrafts = [
   {
     number: "01",
     slug: "what-is-machine-learning",
@@ -1200,6 +2343,7 @@ var lessons = [
     formula: "\\text{precision}=\\frac{TP}{TP+FP} \\qquad \\text{recall}=\\frac{TP}{TP+FN} \\qquad \\text{specificity}=\\frac{TN}{TN+FP}",
     formulaExplanation: "TP and TN are correct positive and negative decisions; FP and FN are false alarms and missed positives. The denominator changes the question each metric answers.",
     code: 'from sklearn.metrics import (\n    confusion_matrix, precision_score, recall_score, f1_score\n)\n\nactual = [1, 1, 0, 0, 0, 0]\npredicted = [1, 0, 0, 0, 1, 0]\n\nprint(confusion_matrix(actual, predicted))\nprint("precision:", precision_score(actual, predicted))\nprint("recall:", recall_score(actual, predicted))\nprint("F1:", f1_score(actual, predicted))',
+    codeOutput: "[[3 1]\n [1 1]]\nprecision: 0.5\nrecall: 0.5\nF1: 0.5",
     codeExplanation: "The positive class is `1`. The model found one of two positives (recall 0.5) and one of its two positive predictions was correct (precision 0.5). Always confirm which class is treated as positive.",
     practice: [
       { prompt: "Using TP=8, FN=2, FP=30, TN=960, calculate accuracy, precision, recall, and specificity.", answer: "Accuracy 0.968, precision \u22480.211, recall 0.8, specificity \u22480.970.", solution: "Accuracy=(8+960)/1000=0.968. Precision=8/(8+30)=8/38\u22480.211. Recall=8/(8+2)=0.8. Specificity=960/(960+30)=960/990\u22480.970." },
@@ -1246,18 +2390,28 @@ var lessons = [
     related: ["gradient-descent", "evaluation-metrics"],
     miniProject: { title: "Train a tiny XOR network", objective: "Build intuition for why hidden nonlinear layers matter by fitting the four-row XOR dataset.", tasks: ["Print the XOR features and targets.", "Train the provided network and record loss every 100 epochs.", "Inspect predictions before and after training.", "Remove the hidden layer and explain why a single linear output cannot fit XOR."], extension: "Change hidden width from 2 to 8 and compare learning speed and final predictions across several seeds." }
   },
-  ...deepLearningLessons
+  ...deepLearningLessons,
+  ...supervisedLessons,
+  ...visionLessons,
+  ...languageLessons,
+  ...productionLessons
 ];
-var modules = [
-  { id: "foundations", number: "01", shortTitle: "ML foundations", title: "Start with the shape of the problem", level: "Beginner", estimatedHours: "2\u20133 hours", lessonCount: 3, lessonSlugs: ["what-is-machine-learning", "supervised-vs-unsupervised", "train-validation-test"], description: "Get clear on what a model learns, what its data says, and how to tell whether a result means anything.", outcomes: ["Inputs & targets", "Learning setups", "Data splits"] },
-  { id: "supervised", number: "02", shortTitle: "Supervised learning", title: "Make a prediction you can explain", level: "Beginner", estimatedHours: "3\u20134 hours", lessonCount: 1, lessonSlugs: ["linear-regression"], description: "Build a first predictive model and understand the assumptions hiding inside its simplicity.", outcomes: ["Regression", "Model assumptions", "Residuals"] },
-  { id: "optimization", number: "03", shortTitle: "Optimization", title: "How a model learns its parameters", level: "Beginner", estimatedHours: "3\u20135 hours", lessonCount: 1, lessonSlugs: ["gradient-descent"], description: "Use derivatives and loss to understand the repeated updates behind model training.", outcomes: ["Loss functions", "Gradients", "Learning rate"] },
-  { id: "model-quality", number: "04", shortTitle: "Model quality", title: "Trust the evidence, not the headline score", level: "Beginner", estimatedHours: "3\u20134 hours", lessonCount: 2, lessonSlugs: ["overfitting-underfitting", "evaluation-metrics"], description: "Diagnose model fit and choose evaluation measures that match the real cost of mistakes.", outcomes: ["Generalization", "Classification metrics", "Error costs"] },
-  { id: "deep-learning", number: "05", shortTitle: "Deep learning", title: "From perceptrons to transformers", level: "Beginner", estimatedHours: "15\u201320 hours", lessonCount: 10, lessonSlugs: ["neural-networks", "perceptrons", "activation-functions-and-losses", "forward-propagation", "backpropagation", "optimizers", "convolutional-neural-networks", "recurrent-neural-networks", "attention-mechanism", "transformers"], description: "Build from a single artificial neuron through training, convolution, recurrent models, attention, and transformer language models.", outcomes: ["Neurons & activations", "Forward/backward passes", "CNNs & RNNs", "Attention & transformers"] },
-  { id: "computer-vision", number: "06", shortTitle: "Computer vision", title: "Teach a model to see patterns", level: "Intermediate", estimatedHours: "6\u20138 hours", lessonCount: 8, lessonSlugs: [], description: "Move from pixels and convolution to image classification, detection, and segmentation.", outcomes: ["Image tensors", "Convolutions", "Transfer learning"] },
-  { id: "language-models", number: "07", shortTitle: "Language & LLMs", title: "From tokens to useful language tools", level: "Intermediate", estimatedHours: "8\u201310 hours", lessonCount: 12, lessonSlugs: [], description: "Understand text representations, attention, transformer architectures, and retrieval-augmented generation.", outcomes: ["Tokenization", "Attention", "RAG"] },
-  { id: "production", number: "08", shortTitle: "Production AI", title: "Bring models into the real world", level: "Advanced", estimatedHours: "8\u201312 hours", lessonCount: 9, lessonSlugs: [], description: "Explore deployment, evaluation, monitoring, and the operational choices that keep ML systems reliable.", outcomes: ["Serving", "Monitoring", "Responsible AI"] }
+var moduleDrafts = [
+  { id: "foundations", number: "01", shortTitle: "ML foundations", title: "Start with the shape of the problem", level: "Beginner", estimatedHours: "2\u20133 hours", lessonSlugs: ["what-is-machine-learning", "supervised-vs-unsupervised", "train-validation-test"], description: "Get clear on what a model learns, what its data says, and how to tell whether a result means anything.", outcomes: ["Inputs & targets", "Learning setups", "Data splits"] },
+  { id: "supervised", number: "02", shortTitle: "Supervised learning", title: "Make a prediction you can explain", level: "Beginner", estimatedHours: "4\u20136 hours", lessonSlugs: ["linear-regression", "logistic-regression", "decision-trees-and-ensembles", "feature-engineering-and-pipelines"], description: "Build predictive models for numbers and categories, combine trees into ensembles, and prepare messy data without leaking it.", outcomes: ["Regression & classification", "Trees & ensembles", "Leak-proof pipelines"] },
+  { id: "optimization", number: "03", shortTitle: "Optimization", title: "How a model learns its parameters", level: "Beginner", estimatedHours: "1\u20132 hours", lessonSlugs: ["gradient-descent"], description: "Use derivatives and loss to understand the repeated updates behind model training.", outcomes: ["Loss functions", "Gradients", "Learning rate"] },
+  { id: "model-quality", number: "04", shortTitle: "Model quality", title: "Trust the evidence, not the headline score", level: "Beginner", estimatedHours: "2\u20133 hours", lessonSlugs: ["overfitting-underfitting", "evaluation-metrics"], description: "Diagnose model fit and choose evaluation measures that match the real cost of mistakes.", outcomes: ["Generalization", "Classification metrics", "Error costs"] },
+  { id: "deep-learning", number: "05", shortTitle: "Deep learning", title: "From perceptrons to transformers", level: "Intermediate", estimatedHours: "15\u201320 hours", lessonSlugs: ["neural-networks", "perceptrons", "activation-functions-and-losses", "forward-propagation", "backpropagation", "optimizers", "convolutional-neural-networks", "recurrent-neural-networks", "attention-mechanism", "transformers"], description: "Build from a single artificial neuron through training, convolution, recurrent models, attention, and transformer language models.", outcomes: ["Neurons & activations", "Forward/backward passes", "CNNs & RNNs", "Attention & transformers"] },
+  { id: "computer-vision", number: "06", shortTitle: "Computer vision", title: "Teach a model to see patterns", level: "Intermediate", estimatedHours: "4\u20136 hours", lessonSlugs: ["image-data-and-augmentation", "transfer-learning", "object-detection-and-segmentation"], description: "Prepare image data, adapt pretrained models to small datasets, and locate objects with detection and segmentation.", outcomes: ["Image tensors", "Transfer learning", "Detection & segmentation"] },
+  { id: "language-models", number: "07", shortTitle: "Language & LLMs", title: "From tokens to useful language tools", level: "Intermediate", estimatedHours: "5\u20137 hours", lessonSlugs: ["tokenization-and-embeddings", "how-llms-generate-text", "retrieval-augmented-generation"], description: "Understand text representations and how language models generate, then ground their answers with retrieval.", outcomes: ["Tokens & embeddings", "Sampling", "RAG"] },
+  { id: "production", number: "08", shortTitle: "Production AI", title: "Bring models into the real world", level: "Advanced", estimatedHours: "5\u20137 hours", lessonSlugs: ["serving-models", "monitoring-and-drift", "responsible-ai"], description: "Deploy models safely, catch silent failures with monitoring, and audit outcomes for the people they affect.", outcomes: ["Serving", "Monitoring", "Responsible AI"] }
 ];
+var modules = moduleDrafts.map((module) => ({ ...module, lessonCount: module.lessonSlugs.length }));
+var lessons = modules.flatMap((module) => module.lessonSlugs).map((slug, index) => {
+  const draft = lessonDrafts.find((item) => item.slug === slug);
+  if (!draft) throw new Error(`Module references a missing lesson: ${slug}`);
+  return { ...draft, ...lessonExtras[slug], number: String(index + 1).padStart(2, "0") };
+});
 
 // server/src/catalog.ts
 var lessonBySlug = new Map(lessons.map((lesson) => [lesson.slug, lesson]));
@@ -1278,15 +2432,54 @@ function getPublishedModules() {
 // server/src/routes/progress.ts
 var progressRouter = Router2();
 progressRouter.use(authenticate);
+function ignoreDuplicates(error) {
+  if (typeof error === "object" && error !== null && "code" in error && error.code === 11e3) return;
+  throw error;
+}
 function requireLesson(rawSlug) {
   const slug = parseSlug(rawSlug);
   const lesson = findPublishedLesson(slug);
   if (!lesson) throw new HttpError(404, "Published lesson not found");
   return lesson;
 }
+async function recordActivityDay(userId, day) {
+  if (day) await User.updateOne({ _id: userId }, { $addToSet: { activityDays: day } });
+}
 progressRouter.get("/", async (request, response) => {
-  const progress = await LessonProgress.find({ userId: request.auth.userId, lessonSlug: { $in: [...publishedLessonSlugs] } }).sort({ lastAccessedAt: -1 }).lean();
-  response.json({ data: { progress } });
+  const userId = request.auth.userId;
+  const [progress, user] = await Promise.all([
+    LessonProgress.find({ userId, lessonSlug: { $in: [...publishedLessonSlugs] } }).sort({ lastAccessedAt: -1 }).lean(),
+    User.findById(userId).select("+activityDays").lean()
+  ]);
+  response.json({ data: { progress, activity: user?.activityDays ?? [] } });
+});
+progressRouter.post("/import", validateBody(importProgressSchema), async (request, response) => {
+  const userId = new Types.ObjectId(request.auth.userId);
+  const body = request.body;
+  const published = (slug) => publishedLessonSlugs.has(slug);
+  const now = /* @__PURE__ */ new Date();
+  const completed = [...new Set(body.completed)].filter(published);
+  const bookmarks = [...new Set(body.bookmarks)].filter(published);
+  const notes = Object.entries(body.notes).filter(([slug, content]) => published(slug) && content.trim());
+  await Promise.all([
+    completed.length && LessonProgress.bulkWrite(completed.map((lessonSlug2) => ({ updateOne: {
+      filter: { userId, lessonSlug: lessonSlug2, isCompleted: { $ne: true } },
+      update: { $set: { isCompleted: true, completedAt: now }, $setOnInsert: { lastAccessedAt: now } },
+      upsert: true
+    } })), { ordered: false }).catch(ignoreDuplicates),
+    bookmarks.length && Bookmark.bulkWrite(bookmarks.map((lessonSlug2) => ({ updateOne: {
+      filter: { userId, lessonSlug: lessonSlug2 },
+      update: { $setOnInsert: { userId, lessonSlug: lessonSlug2 } },
+      upsert: true
+    } })), { ordered: false }),
+    notes.length && LessonNote.bulkWrite(notes.map(([lessonSlug2, content]) => ({ updateOne: {
+      filter: { userId, lessonSlug: lessonSlug2 },
+      update: { $setOnInsert: { content } },
+      upsert: true
+    } })), { ordered: false }),
+    body.activity.length && User.updateOne({ _id: userId }, { $addToSet: { activityDays: { $each: body.activity } } })
+  ]);
+  response.json({ data: { imported: true } });
 });
 progressRouter.get("/dashboard", async (request, response) => {
   const userId = request.auth.userId;
@@ -1323,8 +2516,7 @@ progressRouter.get("/dashboard", async (request, response) => {
     recentlyAccessed: accessed.slice(0, 6).map((item) => ({ ...lessonInfo(item.lessonSlug), lastAccessedAt: item.lastAccessedAt, isCompleted: item.isCompleted })),
     bookmarks: bookmarks.map((item) => ({ ...lessonInfo(item.lessonSlug), createdAt: item.createdAt })),
     latestQuizAttempts: [...latestByLesson.values()].slice(0, 5),
-    bestQuizAttempts: [...bestByLesson.values()].slice(0, 5),
-    learningStreak: null
+    bestQuizAttempts: [...bestByLesson.values()].slice(0, 5)
   } });
 });
 progressRouter.get("/:lessonSlug", async (request, response) => {
@@ -1332,8 +2524,9 @@ progressRouter.get("/:lessonSlug", async (request, response) => {
   const progress = await LessonProgress.findOne({ userId: request.auth.userId, lessonSlug: lesson.slug }).lean();
   response.json({ data: { progress } });
 });
-progressRouter.post("/:lessonSlug/accessed", async (request, response) => {
+progressRouter.post("/:lessonSlug/accessed", validateBody(accessedSchema), async (request, response) => {
   const lesson = requireLesson(request.params.lessonSlug);
+  await recordActivityDay(request.auth.userId, request.body.day);
   const progress = await LessonProgress.findOneAndUpdate(
     { userId: request.auth.userId, lessonSlug: lesson.slug },
     { $set: { lastAccessedAt: /* @__PURE__ */ new Date() }, $setOnInsert: { isCompleted: false, completedAt: null } },
@@ -1344,6 +2537,7 @@ progressRouter.post("/:lessonSlug/accessed", async (request, response) => {
 progressRouter.put("/:lessonSlug", validateBody(progressSchema), async (request, response) => {
   const lesson = requireLesson(request.params.lessonSlug);
   const body = request.body;
+  await recordActivityDay(request.auth.userId, body.day);
   const existing = await LessonProgress.findOne({ userId: request.auth.userId, lessonSlug: lesson.slug }).lean();
   const update = { lastAccessedAt: /* @__PURE__ */ new Date() };
   if (body.lastSection !== void 0) update.lastSection = body.lastSection;
@@ -1351,9 +2545,10 @@ progressRouter.put("/:lessonSlug", validateBody(progressSchema), async (request,
     update.isCompleted = body.isCompleted;
     update.completedAt = body.isCompleted ? existing?.isCompleted && existing.completedAt ? existing.completedAt : /* @__PURE__ */ new Date() : null;
   }
+  const insertDefaults = body.isCompleted === void 0 ? { isCompleted: false, completedAt: null } : {};
   const progress = await LessonProgress.findOneAndUpdate(
     { userId: request.auth.userId, lessonSlug: lesson.slug },
-    { $set: update, $setOnInsert: { isCompleted: false, completedAt: null } },
+    { $set: update, $setOnInsert: insertDefaults },
     { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
   ).lean();
   response.json({ data: { progress } });
@@ -1395,18 +2590,6 @@ bookmarkRouter.delete("/:lessonSlug", async (request, response) => {
 
 // server/src/routes/notes.ts
 import { Router as Router4 } from "express";
-
-// server/src/models/LessonNote.ts
-import { Schema as Schema6, model as model6 } from "mongoose";
-var lessonNoteSchema = new Schema6({
-  userId: { type: Schema6.Types.ObjectId, ref: "User", required: true },
-  lessonSlug: { type: String, required: true, trim: true, maxlength: 120 },
-  content: { type: String, required: true, maxlength: 2e4 }
-}, { timestamps: true });
-lessonNoteSchema.index({ userId: 1, lessonSlug: 1 }, { unique: true });
-var LessonNote = model6("LessonNote", lessonNoteSchema);
-
-// server/src/routes/notes.ts
 var noteRouter = Router4();
 noteRouter.use(authenticate);
 noteRouter.get("/:lessonSlug", async (request, response) => {
@@ -1440,6 +2623,7 @@ noteRouter.delete("/:lessonSlug", async (request, response) => {
 
 // server/src/routes/quizzes.ts
 import { Router as Router5 } from "express";
+import { Types as Types2 } from "mongoose";
 var quizRouter = Router5();
 quizRouter.use(authenticate);
 quizRouter.post("/", validateBody(quizAttemptSchema), async (request, response) => {
@@ -1447,7 +2631,7 @@ quizRouter.post("/", validateBody(quizAttemptSchema), async (request, response) 
   const lesson = findPublishedLesson(lessonSlug2);
   if (!lesson) throw new HttpError(404, "Published lesson not found");
   if (selectedIndex >= lesson.quiz.options.length) throw new HttpError(400, "Selected answer is outside the quiz options");
-  const totalQuestions = lesson.quiz.options.length;
+  const totalQuestions = 1;
   const score = selectedIndex === lesson.quiz.answer ? 1 : 0;
   const [attempt] = await Promise.all([
     QuizAttempt.create({ userId: request.auth.userId, lessonSlug: lessonSlug2, score, totalQuestions, attemptedAt: /* @__PURE__ */ new Date() }),
@@ -1466,7 +2650,7 @@ quizRouter.get("/", async (request, response) => {
     QuizAttempt.find({ userId, lessonSlug: { $in: [...publishedLessonSlugs] } }).sort({ attemptedAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
     QuizAttempt.countDocuments({ userId, lessonSlug: { $in: [...publishedLessonSlugs] } }),
     QuizAttempt.aggregate([
-      { $match: { userId: request.auth.userId, lessonSlug: { $in: [...publishedLessonSlugs] } } },
+      { $match: { userId: new Types2.ObjectId(userId), lessonSlug: { $in: [...publishedLessonSlugs] } } },
       { $addFields: { ratio: { $divide: ["$score", "$totalQuestions"] } } },
       { $sort: { ratio: -1, attemptedAt: -1 } },
       { $group: { _id: "$lessonSlug", attempt: { $first: "$$ROOT" } } },
@@ -1490,27 +2674,26 @@ quizRouter.get("/:lessonSlug", async (request, response) => {
 // server/src/app.ts
 var app = express();
 app.disable("x-powered-by");
+if (process.env.VERCEL) app.set("trust proxy", 1);
 app.use(helmet());
-var allowedOrigins = [
-  env.CLIENT_ORIGIN,
-  "https://ml-tuitor.vercel.app",
-  ...process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []
-];
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".vercel.app") || origin.startsWith("http://localhost:")) {
-      return callback(null, true);
-    }
-    return callback(null, false);
-  },
+  origin: (origin, callback) => callback(null, !origin || isTrustedOrigin(origin)),
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
-app.use(express.json({ limit: "32kb" }));
+app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
-app.get("/api/health", (_request, response) => response.json({ data: { status: "ok", database: mongoose.connection.readyState === 1 ? "connected" : "disconnected" } }));
-app.use("/api", rateLimit2({ windowMs: 6e4, limit: 180, standardHeaders: "draft-8", legacyHeaders: false }));
+app.get("/api/health", (_request, response) => {
+  const database = databaseStatus();
+  response.status(database.database === "connected" ? 200 : 503).json({ data: {
+    status: database.database === "connected" ? "ok" : "degraded",
+    ...database,
+    google: env.googleConfigured,
+    email: env.emailConfigured
+  } });
+});
+app.use("/api", rateLimit2({ windowMs: 6e4, limit: 180, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many requests. Please slow down and try again shortly." } }));
 app.use("/api/auth", authRouter);
 app.use("/api/progress", progressRouter);
 app.use("/api/bookmarks", bookmarkRouter);
@@ -1519,48 +2702,18 @@ app.use("/api/quizzes/attempts", quizRouter);
 app.use((_request, response) => response.status(404).json({ error: "API route not found" }));
 app.use(errorHandler);
 
-// server/src/database.ts
-import mongoose2 from "mongoose";
-async function connectDatabase(uri) {
-  mongoose2.set("strictQuery", true);
-  mongoose2.set("bufferCommands", false);
-  await mongoose2.connect(uri, {
-    serverSelectionTimeoutMS: 8e3,
-    connectTimeoutMS: 8e3
-  });
-}
-
 // server/src/serverless.ts
-var isConnected = false;
-var connectionPromise = null;
-async function ensureDatabase() {
-  if (isConnected) return;
-  if (!connectionPromise) {
-    if (!env.MONGODB_URI) {
-      throw new Error("MONGODB_URI is not configured");
-    }
-    connectionPromise = connectDatabase(env.MONGODB_URI).then(() => {
-      isConnected = true;
-    }).catch((err) => {
-      connectionPromise = null;
-      const message = err instanceof Error ? err.message : String(err);
-      console.error("MongoDB connection error in serverless handler:", message);
-      throw new Error(`MongoDB connection failed: ${message}`);
-    });
-  }
-  return connectionPromise;
-}
 async function handler(req, res) {
   try {
-    await ensureDatabase();
+    await connectDatabase(env.MONGODB_URI);
   } catch (error) {
     console.error("MongoDB is unavailable for API request:", error instanceof Error ? error.message : String(error));
-    res.statusCode = 503;
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({
-      error: req.url?.startsWith("/api/health") ? "Database is unavailable. Check the MONGODB_URI value and MongoDB Atlas network access." : "Database is unavailable. Please try again later."
-    }));
-    return;
+    if (!req.url?.startsWith("/api/health")) {
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "Database is unavailable. Please try again later." }));
+      return;
+    }
   }
   return app(req, res);
 }

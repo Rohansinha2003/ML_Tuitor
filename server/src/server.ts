@@ -4,6 +4,7 @@ import { connectDatabase, disconnectDatabase } from './database.js'
 
 async function resolveMongoUri(): Promise<string> {
   if (env.MONGODB_URI) return env.MONGODB_URI
+  if (env.NODE_ENV === 'production') throw new Error('MONGODB_URI is required in production')
   // In development, use an in-memory MongoDB server when no URI is configured
   const { MongoMemoryServer } = await import('mongodb-memory-server')
   const memServer = await MongoMemoryServer.create()
@@ -16,6 +17,8 @@ async function start() {
   await connectDatabase(mongoUri)
   const server = app.listen(env.PORT, () => {
     console.info(`DeepNova API listening on port ${env.PORT}`)
+    console.info(`Google sign-in: ${env.googleConfigured ? `enabled, callback ${env.GOOGLE_CALLBACK_URL}` : 'not configured'}`)
+    console.info(`Email delivery: ${env.emailConfigured ? 'enabled' : 'not configured'}`)
   })
   let shuttingDown = false
   const shutdown = async () => {
@@ -31,6 +34,6 @@ async function start() {
 }
 
 start().catch((error: unknown) => {
-  console.error('DeepNova API failed to start', error instanceof Error ? error.message : 'Unknown error')
+  console.error('DeepNova API failed to start:', error instanceof Error ? error.message : 'Unknown error')
   process.exit(1)
 })
